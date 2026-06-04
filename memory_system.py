@@ -60,9 +60,8 @@ def init_memory():
 > This supplements profile.md with things Jarvis has learned over time.
 
 ## Career
-- No internship applications sent in May 2026 (as of start of memory system)
 - Has an industry mentor
-- Applications last month: Google, TikTok, Canva — awaiting outcomes
+- Internship applications sent (outcomes pending)
 
 ## Health & fitness
 - Running PPLRUL split: Push/Pull/Legs/Rest/Upper/Sharms/Rest
@@ -76,7 +75,7 @@ def init_memory():
 
 ## Personal
 - No passion project defined yet
-- T1 holidays at UNSW — currently in holiday period
+- Currently in T2 2026 at UNSW (COMP2511, MATH2601, MATH2901)
 
 """)
 
