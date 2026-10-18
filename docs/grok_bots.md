@@ -15,7 +15,7 @@ Jarvis talks to Manav through two channels (see `docs/REWORK.md` §2):
 Every bot calls the same API:
 
 ```
-Base URL:  https://jarvis-vps.example.ts.net
+Base URL:  https://<your-tailscale-funnel-host>
 Header:    Authorization: Bearer <that bot's token>
 ```
 

@@ -186,8 +186,8 @@ def test_reply_to_area_touches_it(isolated, monkeypatch, tmp_path):
 
 
 def test_errors_are_logged_without_the_bot_token(monkeypatch):
-    monkeypatch.setattr(jarvis_telegram.config, "TELEGRAM_BOT_TOKEN", "8605553805:AAHsecret")
+    monkeypatch.setattr(jarvis_telegram.config, "TELEGRAM_BOT_TOKEN", "123456789:AAHsecret")
     err = ConnectionError("HTTPSConnectionPool(host='api.telegram.org', port=443): Max retries exceeded "
-                          "with url: /bot8605553805:AAHsecret/getUpdates?offset=1")
+                          "with url: /bot123456789:AAHsecret/getUpdates?offset=1")
     assert "AAHsecret" not in jarvis_telegram.redact(err)
     assert "/bot<token>/getUpdates" in jarvis_telegram.redact(err)
