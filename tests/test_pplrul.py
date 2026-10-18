@@ -28,7 +28,7 @@ def test_get_pplrul_day_follows_the_weekday_names(tmp_path, monkeypatch):
 
 def test_update_workout_schedule_rejects_a_missing_weekday(tmp_path, monkeypatch):
     path = tmp_path / "term_context.json"
-    path.write_text(json.dumps({"mentor": {"name": "Emily"}}))
+    path.write_text(json.dumps({"mentor": {"name": "Alex"}}))
     monkeypatch.setattr(term_context, "CONTEXT_FILE", path)
     schedule = dict(term_context.DEFAULT_WORKOUT_SCHEDULE)
     schedule.pop("Wednesday")
@@ -50,16 +50,16 @@ def test_update_workout_schedule_rejects_an_unknown_label(tmp_path, monkeypatch)
 
 def test_update_workout_schedule_writes_the_weekday_map(tmp_path, monkeypatch):
     path = tmp_path / "term_context.json"
-    path.write_text(json.dumps({"mentor": {"name": "Emily"}}))
+    path.write_text(json.dumps({"mentor": {"name": "Alex"}}))
     monkeypatch.setattr(term_context, "CONTEXT_FILE", path)
     schedule = dict(term_context.DEFAULT_WORKOUT_SCHEDULE)
     schedule["Monday"] = "Rest"
     term_context.update_workout_schedule(schedule)
     assert term_context.get_pplrul_day(_SUNDAY + datetime.timedelta(days=1)) == "Rest"
     stored = json.loads(path.read_text())
-    assert stored["mentor"]["name"] == "Emily"
+    assert stored["mentor"]["name"] == "Alex"
     assert stored["workout_schedule"]["Monday"] == "Rest"
     assert stored["workout_schedule"]["Sunday"] == "Push"
     previous = json.loads((tmp_path / "term_context.json.bak").read_text())
-    assert previous["mentor"]["name"] == "Emily"
+    assert previous["mentor"]["name"] == "Alex"
     assert "workout_schedule" not in previous

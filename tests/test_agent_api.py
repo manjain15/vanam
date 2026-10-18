@@ -270,7 +270,7 @@ def _seed(tmp_path, monkeypatch, mentor=None, internships=None):
 
 def _mentor():
     return {
-        "name": "Emily",
+        "name": "Alex",
         "email": "emily@example.com",
         "last_contact": _iso(40),
         "last_topic": "intro",
@@ -327,7 +327,7 @@ def test_mentor_patch_clears_flag_and_writes_audit(tmp_path, monkeypatch):
     assert body["changed"] is True
     assert body["audit_logged"] is True
     assert body["mentor"]["email"] == "emily@example.com"
-    assert body["mentor"]["name"] == "Emily"
+    assert body["mentor"]["name"] == "Alex"
     assert body["mentor"]["last_contact"] == recent
     assert body["mentor"]["notes"] == "Emailed earlier\nstill waiting"
     assert body["changes"]["last_contact"]["old"] == _iso(40)
