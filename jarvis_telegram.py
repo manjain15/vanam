@@ -28,7 +28,7 @@ ONE-TIME SETUP:
 
   4. Test:
        python jarvis_telegram.py --test
-     Sends "Jarvis online." to your Telegram.
+     Sends "Vanam online." to your Telegram.
 
   5. Run the daemon:
        python jarvis_telegram.py
@@ -274,7 +274,7 @@ def build_static_context():
     return "\n\n────────────────────────────\n".join(parts)
 
 
-SYSTEM_PROMPT = """You are Jarvis — Manav's personal AI assistant, talking to him over Telegram.
+SYSTEM_PROMPT = """You are Vanam — Manav's personal AI assistant, talking to him over Telegram.
 
 Voice: direct, concise, intelligent. Like a smart friend who knows him deeply.
 No corporate filler. No "Great question!". No "I hope this helps!". Just be useful.
@@ -567,7 +567,7 @@ def chat_with_claude(user_message, static_context, recent_turns, tools=None):
 
 def cmd_help(_args):
     return (
-        "Jarvis commands:\n"
+        "Vanam commands:\n"
         "/brief — run morning brief now\n"
         "/flags — today's term flags\n"
         "/deadlines — upcoming assessments across all courses\n"
@@ -932,7 +932,7 @@ def cmd_status(_args):
 
     Replies are sent as plain text (no parse_mode), so this returns a plain string.
     """
-    lines = ["Jarvis status"]
+    lines = ["Vanam status"]
 
     # Always-on services: the .service itself should be active.
     for unit in STATUS_ALWAYS_ON:
@@ -1238,6 +1238,27 @@ def handle_update(update, static_context_holder):
     print(f"📤  → {reply[:80]}")
 
 
+def ensure_bot_display_name():
+    """Set the Telegram display name to Vanam when it is not already.
+
+    Uses getMyName and setMyName, which change the name shown in chats.
+    The @username and the bot token are left alone. A failed call is logged
+    and ignored so the listener still starts; rename in BotFather with
+    /setname if this never sticks.
+    """
+    try:
+        current = _api("getMyName", timeout=10)
+        name = current.get("name") if isinstance(current, dict) else None
+        if name == "Vanam":
+            return
+        _api("setMyName", {"name": "Vanam"}, timeout=10)
+    except Exception as e:
+        print(
+            "⚠️  Could not set the Telegram display name to Vanam "
+            f"({redact(e)}). Rename the bot in BotFather with /setname."
+        )
+
+
 def run_listener():
     if not config.TELEGRAM_BOT_TOKEN:
         print("❌  config.TELEGRAM_BOT_TOKEN is empty. See setup at top of file.")
@@ -1251,7 +1272,8 @@ def run_listener():
     REFRESH_SECONDS = 3600
 
     print(f"🤖  Jarvis Telegram listener online — chat_id={config.TELEGRAM_CHAT_ID}")
-    send_message("Jarvis online. Send /help for commands.")
+    ensure_bot_display_name()
+    send_message("Vanam online. Send /help for commands.")
 
     offset = load_offset()
     while True:
@@ -1285,7 +1307,7 @@ if __name__ == "__main__":
     parser.add_argument("--setup", action="store_true",
                         help="Discover and save your chat ID after messaging the bot")
     parser.add_argument("--test",  action="store_true",
-                        help="Send a test 'Jarvis online' message and exit")
+                        help="Send a test 'Vanam online' message and exit")
     args = parser.parse_args()
 
     if args.setup:
@@ -1294,7 +1316,7 @@ if __name__ == "__main__":
         if not config.TELEGRAM_CHAT_ID:
             print("❌  Run --setup first.")
             sys.exit(1)
-        send_message("Jarvis online (test message). All wiring works.")
+        send_message("Vanam online (test message). All wiring works.")
         print("✅  Test message sent.")
     else:
         run_listener()

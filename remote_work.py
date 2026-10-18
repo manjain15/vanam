@@ -199,7 +199,7 @@ def _open_pull_request(project, full_name, branch, base_branch, instruction, sum
                 "title": instruction[:200],
                 "head": branch,
                 "base": base_branch,
-                "body": f"Opened automatically by Jarvis remote-work.\n\n**Task:** {instruction}\n\n**Last output:**\n```\n{summary[-1500:]}\n```",
+                "body": f"Opened automatically by Vanam remote-work.\n\n**Task:** {instruction}\n\n**Last output:**\n```\n{summary[-1500:]}\n```",
             },
             timeout=15,
         )

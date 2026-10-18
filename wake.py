@@ -150,7 +150,7 @@ def ask_jarvis(question):
             except Exception:
                 pass
             system = (
-                "You are Jarvis, Manav's personal AI assistant. "
+                "You are Vanam, Manav's personal AI assistant. "
                 "Brilliant, direct, concise for voice. "
                 "Your response will be spoken aloud — no markdown, no bullets, "
                 "speak in natural sentences. 2-4 sentences unless it needs more.\n\n"
@@ -159,7 +159,7 @@ def ask_jarvis(question):
             )
         else:
             system = (
-                "You are Jarvis, Manav's personal AI assistant. "
+                "You are Vanam, Manav's personal AI assistant. "
                 "Respond concisely for voice — natural sentences, no markdown. "
                 "Maintain full context of this conversation."
             )
@@ -195,7 +195,7 @@ def ask_jarvis(question):
             )
             return r.json().get("answer", "")
         except Exception as e2:
-            return f"Could not reach Jarvis: {e2}"
+            return f"Could not reach Vanam: {e2}"
 
 SCRIPT_DIR = Path(__file__).parent
 

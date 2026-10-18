@@ -254,7 +254,7 @@ def generate_intelligence_report():
     # Build the prompt
     profile_text = (SCRIPT_DIR / "profile.md").read_text() if (SCRIPT_DIR / "profile.md").exists() else ""
 
-    prompt = f"""You are Jarvis, Manav's personal AI assistant. Generate a weekly intelligence report.
+    prompt = f"""You are Vanam, Manav's personal AI assistant. Generate a weekly intelligence report.
 This is NOT a recap — it's a pattern analysis and recommendation engine.
 Your job is to identify trends across 4 weeks of data and make specific, actionable recommendations.
 

@@ -2,7 +2,7 @@
 <html>
 <head>
 <meta charset="UTF-8">
-<title>Jarvis</title>
+<title>Vanam</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&display=swap');
 *{margin:0;padding:0;box-sizing:border-box}
@@ -16,7 +16,7 @@ canvas{position:absolute;top:0;left:0;pointer-events:none}
 <body>
 <canvas id="c"></canvas>
 <div class="ui">
-  <div class="status" id="st">idle · say hey jarvis</div>
+  <div class="status" id="st">idle · say hey vanam</div>
   <div class="transcript" id="tr"></div>
 </div>
 <script>
@@ -99,7 +99,7 @@ function drawScan(color){
 
 function applyState(s){
   STATE=s;
-  var labels={idle:'idle · say hey jarvis',listen:'listening...',think:'processing...',speak:'speaking...'};
+  var labels={idle:'idle · say hey vanam',listen:'listening...',think:'processing...',speak:'speaking...'};
   var colors={idle:'rgba(0,229,255,0.35)',listen:'rgba(0,229,255,0.9)',think:'rgba(123,97,255,0.9)',speak:'rgba(0,255,136,0.9)'};
   document.getElementById('st').textContent=labels[s];
   document.getElementById('st').style.color=colors[s];

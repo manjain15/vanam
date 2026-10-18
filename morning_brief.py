@@ -642,7 +642,7 @@ HEVY WORKOUT DATA:
 {hevy_section}
 
 ────────────────────────────
-JARVIS MEMORY (patterns and history):
+VANAM MEMORY (patterns and history):
 ────────────────────────────
 {memory_section}
 
@@ -1055,7 +1055,7 @@ def collect_brief_data(creds, now, note):
         "due": due_rows(upcoming),
         "yesterday": yesterday_stats(prev, sleep, health_steps, weight, delta),
         "push": note.get("push"),
-        "footer": f"jarvis · {now:%H:%M}",
+        "footer": f"vanam · {now:%H:%M}",
     }
 
 
@@ -1297,7 +1297,7 @@ def run_brief(preview=None):
         print(f"⚠️   Could not save brief for the agent API: {e}")
 
     print("📤  Sending brief...")
-    send_email(creds, html_body, text_body, f"{today:%a %-d %b} · jarvis")
+    send_email(creds, html_body, text_body, f"{today:%a %-d %b} · vanam")
 
     print("\n✅  Done. Check your inbox.\n")
 

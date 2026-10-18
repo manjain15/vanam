@@ -4,7 +4,7 @@ Jarvis — Voice
 One set of writing rules for everything Jarvis writes with Claude, so the
 brief, the weekly review, the day plan tasks and chat replies sound like the
 same thing. Paste VOICE_RULES at the top of a prompt instead of a
-"You are Jarvis — a highly intelligent assistant..." opener.
+"You are Vanam — a highly intelligent assistant..." opener.
 
 The same rules go into each Grok bot's instructions (docs/grok_bots.md).
 See docs/REWORK.md §11.
@@ -12,7 +12,7 @@ See docs/REWORK.md §11.
 
 import re
 
-VOICE_RULES = """You write for Jarvis, Manav's personal assistant. Manav is a second-year UNSW student.
+VOICE_RULES = """You write for Vanam, Manav's personal assistant. Manav is a second-year UNSW student.
 
 Voice:
 - Plain, calm and firm. Never snarky, never cheerleading.

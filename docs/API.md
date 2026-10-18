@@ -1,5 +1,7 @@
 # Jarvis agent API
 
+Vanam, formerly Jarvis; internals keep the jarvis name.
+
 A small HTTP API so an external assistant can query Jarvis and correct stale
 mentor or internship records. It is a separate process from the localhost
 dashboard (`dashboard.py`, port 5555, no auth) and from the iPhone spend

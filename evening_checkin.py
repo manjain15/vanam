@@ -182,7 +182,7 @@ def build_checkin_steps(pplrul_today, pplrul_tomorrow, weekday=None):
                   "followups": {True: [{"key": "uni_work_details",
                                         "prompt": "What did you work on?", "type": "text"}]}})
     steps.append({"key": "upcoming_deadline",
-                  "prompt": "Any uni deadlines coming up in the next 2 weeks you want Jarvis to track?",
+                  "prompt": "Any uni deadlines coming up in the next 2 weeks you want Vanam to track?",
                   "type": "text"})
 
     # ── Passion Project ───────────────────────────────────────────────────────
@@ -237,7 +237,7 @@ def build_checkin_steps(pplrul_today, pplrul_tomorrow, weekday=None):
                   "prompt": "What's the ONE thing you most want to get done tomorrow?",
                   "type": "text"})
     steps.append({"key": "anything_else",
-                  "prompt": "Anything else on your mind you want Jarvis to know or remember?",
+                  "prompt": "Anything else on your mind you want Vanam to know or remember?",
                   "type": "text"})
 
     return steps
@@ -374,7 +374,7 @@ GENERAL:
     except Exception:
         timetable_text = ""
 
-    prompt = f"""You are Jarvis — Manav's personal AI assistant. You know him well.
+    prompt = f"""You are Vanam — Manav's personal AI assistant. You know him well.
 
 Here is his profile:
 {profile_text}
@@ -395,7 +395,7 @@ CARRY-FORWARD:
 TOMORROW CONTEXT:
 [1-2 sentences setting up tomorrow — what Manav said he wants to focus on, what PPLRUL day it is, anything to be aware of.]
 
-Be direct. No fluff. Write it as a handoff note from tonight-Jarvis to tomorrow-morning-Jarvis.
+Be direct. No fluff. Write it as a handoff note from tonight-Vanam to tomorrow-morning-Vanam.
 """
 
     message = client.messages.create(
@@ -589,7 +589,7 @@ def plan_actions(facts, answers, notes, today=None):
     prompt = f"""{VOICE_RULES}
 
 Manav just finished his evening check-in. Today is {today:%A %Y-%m-%d}; tomorrow is
-{tomorrow:%A %Y-%m-%d}. Facts from Jarvis's data and his answers are below.
+{tomorrow:%A %Y-%m-%d}. Facts from Vanam's data and his answers are below.
 
 HIS WEEKLY ROUTINE (fixed commitments by weekday):
 {_routine_text()}

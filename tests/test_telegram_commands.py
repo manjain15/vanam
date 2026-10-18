@@ -185,6 +185,47 @@ def test_reply_to_area_touches_it(isolated, monkeypatch, tmp_path):
     assert ledger.load_day(SATURDAY)["items"][-1]["status"] == "done"
 
 
+def test_help_names_vanam():
+    help_text = jarvis_telegram.cmd_help([])
+    assert help_text.startswith("Vanam commands:")
+    assert "Jarvis" not in help_text
+    assert jarvis_telegram.SYSTEM_PROMPT.startswith(
+        "You are Vanam — Manav's personal AI assistant"
+    )
+
+
+def test_display_name_is_set_only_when_it_differs(monkeypatch):
+    calls = []
+
+    def already(method, params=None, timeout=35):
+        calls.append((method, params))
+        return {"name": "Vanam"}
+
+    monkeypatch.setattr(jarvis_telegram, "_api", already)
+    jarvis_telegram.ensure_bot_display_name()
+    assert calls == [("getMyName", None)]
+
+    calls.clear()
+
+    def rename(method, params=None, timeout=35):
+        calls.append((method, params))
+        if method == "getMyName":
+            return {"name": "Jarvis"}
+        return True
+
+    monkeypatch.setattr(jarvis_telegram, "_api", rename)
+    jarvis_telegram.ensure_bot_display_name()
+    assert calls == [("getMyName", None), ("setMyName", {"name": "Vanam"})]
+
+
+def test_display_name_failure_does_not_raise(monkeypatch):
+    def boom(method, params=None, timeout=35):
+        raise RuntimeError("bot123:secret offline")
+
+    monkeypatch.setattr(jarvis_telegram, "_api", boom)
+    jarvis_telegram.ensure_bot_display_name()
+
+
 def test_errors_are_logged_without_the_bot_token(monkeypatch):
     monkeypatch.setattr(jarvis_telegram.config, "TELEGRAM_BOT_TOKEN", "123456789:AAHsecret")
     err = ConnectionError("HTTPSConnectionPool(host='api.telegram.org', port=443): Max retries exceeded "

@@ -171,7 +171,7 @@ def generate_proposals(today_data, episodic_entry):
     profile_text = PROFILE_FILE.read_text()
     client       = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
-    prompt = f"""You are Jarvis's profile update system. Your job is to identify when facts in profile.md are outdated or missing based on new data.
+    prompt = f"""You are Vanam's profile update system. Your job is to identify when facts in profile.md are outdated or missing based on new data.
 
 CURRENT PROFILE.MD:
 {profile_text}

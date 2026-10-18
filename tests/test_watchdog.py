@@ -84,6 +84,7 @@ def test_repeated_failure_alerts_once(tmp_path, monkeypatch):
     assert watchdog.run() == ["❌ jarvis-agent-api /health probe failed"]
     assert watchdog.run() == ["❌ jarvis-agent-api /health probe failed"]
     assert len(calls) == 1
+    assert calls[0].startswith("🚨 Vanam watchdog")
 
     monkeypatch.setattr(watchdog, "check_problems", lambda: ["❌ jarvis-telegram service is inactive (should be active)"])
     watchdog.run()

@@ -299,7 +299,7 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>Jarvis</title>
+<title>Vanam</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
 <style>
@@ -731,7 +731,7 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
 <div class="header">
   <div class="header-left">
     <div class="status-dot" id="statusDot"></div>
-    <div class="logo">JARVIS</div>
+    <div class="logo">VANAM</div>
   </div>
   <div style="display:flex;align-items:center;gap:10px">
     <span class="updated" id="updatedAt">loading...</span>
@@ -1095,7 +1095,7 @@ def ask():
             pass
 
     # Build the prompt
-    prompt = f"""You are Jarvis — Manav's personal AI assistant. He is talking to you via voice through a Siri Shortcut.
+    prompt = f"""You are Vanam — Manav's personal AI assistant. He is talking to you via voice through a Siri Shortcut.
 
 IMPORTANT: Your response will be READ ALOUD by Siri. So:
 - Keep it SHORT — 2-4 sentences maximum

@@ -382,7 +382,7 @@ def generate_daily_plan(sleep_hours=None, profile_text="", memory_text=""):
 
     sleep_str = f"{sleep_hours:.1f} hours" if sleep_hours else "unknown"
 
-    prompt = f"""You are Jarvis, Manav's personal AI assistant. Generate a smart, realistic time-blocked day plan for today.
+    prompt = f"""You are Vanam, Manav's personal AI assistant. Generate a smart, realistic time-blocked day plan for today.
 
 TODAY: {now.strftime('%A, %d %B %Y')}
 CURRENT TIME: {now.strftime('%-I:%M %p')}
@@ -402,7 +402,7 @@ MANAV'S PRIORITIES (from profile):
 - Gym training (PPLRUL split)
 - Pokemon reselling (sell existing inventory)
 {_savings_line}
-- Building Jarvis
+- Building Vanam
 
 CONTEXT:
 {memory_text[:500] if memory_text else 'No recent context.'}
@@ -515,7 +515,7 @@ Rules:
         title=data["title"],
         start_dt=start_dt,
         end_dt=end_dt,
-        description=data.get("description", "Created by Jarvis"),
+        description=data.get("description", "Created by Vanam"),
         colour_id=8,  # graphite for Jarvis-created events
     )
 
