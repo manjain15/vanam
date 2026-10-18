@@ -1,5 +1,7 @@
 # Jarvis — Claude Code Agent Instructions
 
+Vanam, formerly Jarvis; internals keep the jarvis name.
+
 ## Project
 Personal AI assistant built by Manav (UNSW Year 2). Stack: Python, Flask, Google APIs
 (Calendar, Tasks, Gmail, Health), Hevy API, St. George finance CSV, Anthropic API,

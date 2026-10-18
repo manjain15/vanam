@@ -42,7 +42,7 @@ DEFAULT_AREAS = {
                    "next_action": "Write the one-page concept"},
     "portfolio":  {"label": "Portfolio / GitHub",       "target_per_week": 2, "blockable": True,
                    "evidence": "github:manjain15/jarvis",
-                   "next_action": "Clean up the Jarvis README for a public demo"},
+                   "next_action": "Clean up the Vanam README for a public demo"},
     "career":     {"label": "Internship applications",  "target_per_week": 2, "blockable": True,
                    "next_action": "Apply to one SWE or ML internship"},
     "networking": {"label": "Networking",                "target_per_week": 1, "blockable": True,

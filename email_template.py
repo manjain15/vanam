@@ -22,7 +22,7 @@ caller from Jarvis's data. Sections with nothing in them are left out.
       "due":       [{"label": "MATH2931 Assignment 2", "value": "Wed 11 Nov · 30d"}],
       "yesterday": [{"value": "Done", "label": "Legs", "miss": False}, ...],  # up to 4
       "push":      "Message ... Draft is in Gmail.",           # optional
-      "footer":    "jarvis · 07:05",
+      "footer":    "vanam · 07:05",
     }
 """
 

@@ -48,16 +48,16 @@ TIMEZONE = pytz.timezone(config.TIMEZONE)
 
 def init_memory():
     if not EPISODIC.exists():
-        EPISODIC.write_text("""# Jarvis — Episodic Memory
+        EPISODIC.write_text("""# Vanam — Episodic Memory
 > Automatically maintained. Each entry is a significant event or observation.
-> Jarvis reads this to understand patterns and history.
+> Vanam reads this to understand patterns and history.
 
 """)
 
     if not SEMANTIC.exists():
-        SEMANTIC.write_text("""# Jarvis — Semantic Memory
+        SEMANTIC.write_text("""# Vanam — Semantic Memory
 > Current facts about Manav's life. Updated automatically when things change.
-> This supplements profile.md with things Jarvis has learned over time.
+> This supplements profile.md with things Vanam has learned over time.
 
 ## Career
 - Has an industry mentor
@@ -123,7 +123,7 @@ def load_todays_data():
                             f"\n          A: {entry['answer'][:150]}"
                         )
             if today_interactions:
-                sections.insert(0, "VOICE INTERACTIONS TODAY (Siri/Jarvis conversations):")
+                sections.insert(0, "VOICE INTERACTIONS TODAY (Siri/Vanam conversations):")
         except Exception as e:
             pass
 
@@ -148,7 +148,7 @@ def load_todays_data():
             if today_turns:
                 tg_lines = ["TELEGRAM CONVERSATION TODAY:"]
                 for e in today_turns:
-                    role = "Manav" if e["role"] == "user" else "Jarvis"
+                    role = "Manav" if e["role"] == "user" else "Vanam"
                     tg_lines.append(f"  [{e['ts'][11:16]}] {role}: {e['text'][:200]}")
                 sections.append("\n".join(tg_lines))
         except Exception:
@@ -256,7 +256,7 @@ def generate_memory_entries(today_data, date=None):
 
     client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
-    prompt = f"""You are Jarvis's memory system. Your job is to decide what's worth remembering from today and update the memory files.
+    prompt = f"""You are Vanam's memory system. Your job is to decide what's worth remembering from today and update the memory files.
 
 TODAY: {today_str}
 
@@ -388,7 +388,7 @@ def load_memory(days_back=14):
 
     # Semantic memory (current facts)
     if SEMANTIC.exists():
-        sections.append("JARVIS MEMORY — CURRENT FACTS:\n" + SEMANTIC.read_text())
+        sections.append("VANAM MEMORY — CURRENT FACTS:\n" + SEMANTIC.read_text())
 
     # Recent episodic entries
     if EPISODIC.exists():
@@ -412,7 +412,7 @@ def load_memory(days_back=14):
                 recent.append(line)
 
         if recent:
-            sections.append("JARVIS MEMORY — RECENT HISTORY (last 2 weeks):\n" + "\n".join(recent))
+            sections.append("VANAM MEMORY — RECENT HISTORY (last 2 weeks):\n" + "\n".join(recent))
 
     return "\n\n".join(sections)
 
@@ -526,7 +526,7 @@ def run_memory_update():
                     q = interaction.get("question", "")
                     a = interaction.get("answer", "")
                     if q and len(q) > 5:
-                        text = f"Manav asked Jarvis: '{q}'. Jarvis responded: '{a[:200]}'"
+                        text = f"Manav asked Vanam: '{q}'. Vanam responded: '{a[:200]}'"
                         result = add_memory(text, metadata={
                             "source": "voice_interaction",
                             "date":   interaction.get("date", today.strftime("%Y-%m-%d")),

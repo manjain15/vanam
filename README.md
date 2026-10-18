@@ -1,5 +1,7 @@
 # Jarvis
 
+Vanam, formerly Jarvis; internals keep the jarvis name.
+
 A personal assistant that runs my day as a student at UNSW. It plans study
 time around classes, enforces the gym, tracks steps and deadlines, and sends
 a daily brief. It checks what actually happened against real data (Hevy,

@@ -731,7 +731,7 @@ def test_note_review_rewrite_leaves_other_courses_and_lectures(monkeypatch):
     assert tasks[2] == "Review W5 tutorial notes"
     assert tasks[3] == "Watch W5 lecture 1 + notes"
     prompt = seen["prompt"]
-    assert prompt.startswith("You write for Jarvis")
+    assert prompt.startswith("You write for Vanam")
     assert "study_style is practice (COMP2511, COMP3121)" in prompt
     assert 'Do not write "review notes", "read notes"' in prompt
     assert "study_style is notes (MATH2931)" in prompt

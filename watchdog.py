@@ -250,9 +250,9 @@ def run(daily=False, print_only=False):
     problems = check_problems()
 
     if problems:
-        report = "🚨 Jarvis watchdog — issues detected:\n" + "\n".join(f"  {p}" for p in problems)
+        report = "🚨 Vanam watchdog — issues detected:\n" + "\n".join(f"  {p}" for p in problems)
     else:
-        report = "✅ Jarvis watchdog — all systems healthy."
+        report = "✅ Vanam watchdog — all systems healthy."
 
     notify, fingerprint = should_notify(
         problems, daily, load_alert_state(STATE_FILE),

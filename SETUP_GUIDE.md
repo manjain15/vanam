@@ -1,4 +1,7 @@
 # Jarvis Setup Guide
+
+Vanam, formerly Jarvis; internals keep the jarvis name.
+
 Complete this once and Jarvis runs forever.
 
 ---

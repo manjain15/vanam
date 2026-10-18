@@ -140,7 +140,7 @@ def generate_proposals(today_data, episodic_entry):
 
     client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
-    prompt = f"""You are Jarvis's term-context update detector. You watch for changes
+    prompt = f"""You are Vanam's term-context update detector. You watch for changes
 in Manav's day-to-day data that imply his term_context.json is now out of date.
 
 CURRENT term_context.json:

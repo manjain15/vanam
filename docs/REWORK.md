@@ -1,5 +1,7 @@
 # Jarvis rework — commit, verify, escalate
 
+Vanam, formerly Jarvis; internals keep the jarvis name.
+
 Status: **draft for sign-off**. No code until approved.
 Reference design: `docs/brief_design.html` (dark, approved).
 

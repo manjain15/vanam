@@ -709,7 +709,7 @@ def run_weekly_review(preview=None):
     note = generate_weekly_note(context[:14000], week_label)
 
     title, meta, sections = build_review_sections(now.date(), note)
-    html_body, text_body = render_sections(title, meta, note.get("note"), sections, f"jarvis · {now:%H:%M}")
+    html_body, text_body = render_sections(title, meta, note.get("note"), sections, f"vanam · {now:%H:%M}")
 
     if preview:
         Path(preview).write_text(html_body)
@@ -724,7 +724,7 @@ def run_weekly_review(preview=None):
         print(f"⚠️   Could not save review for the agent API: {e}")
 
     print("📤  Sending review...")
-    send_weekly_review(html_body, text_body, f"{title} · jarvis")
+    send_weekly_review(html_body, text_body, f"{title} · vanam")
     print("\n✅  Weekly review sent. Check your inbox.\n")
 
 
