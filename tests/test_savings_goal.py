@@ -15,7 +15,7 @@ from reselling_tracker import Item, paid_capital
 from test_finance_routes import AUTH, _client, _dmy, _patch_files, _write_csv
 
 OCT17 = datetime.date(2026, 10, 17)
-OCT17_CAPITAL = {"stock": 2015, "pending_shipping": 980.75, "deposits_paid": 400}
+OCT17_CAPITAL = {"stock": 1500, "pending_shipping": 980.75, "deposits_paid": 400}
 
 
 def _write_revolut(path, balance, stamp="2026-10-17 12:00:00"):
@@ -45,10 +45,10 @@ def test_paid_capital_counts_deposits_paid_not_full_cost():
         status="paid pending shipping", category="Cards", name="Etb",
         cost=980.75, sale_price=None, deposit_paid=980.75,
     )
-    stock = Item(status="in stock", category="Cards", name="Box", cost=2015, sale_price=None)
+    stock = Item(status="in stock", category="Cards", name="Box", cost=1500, sale_price=None)
     sold = Item(status="sold", category="Cards", name="Gone", cost=50, sale_price=80)
     assert paid_capital([stock, shipping, deposit, sold]) == {
-        "stock": 2015.0,
+        "stock": 1500.0,
         "pending_shipping": 980.75,
         "deposits_paid": 400.0,
         "total": 2880.75,
@@ -108,7 +108,7 @@ def test_oct17_total_excludes_everyday_and_unpaid_deposits(tmp_path, monkeypatch
     assert breakdown["friend_share_applied"] is True
     assert breakdown["revolut_own"] == 5480.25
     assert breakdown["everyday"] is None
-    assert breakdown["stock"] == 2015
+    assert breakdown["stock"] == 1500
     assert breakdown["pending_shipping"] == 980.75
     assert breakdown["deposits_paid"] == 400
     assert breakdown["cash"] == 10600.65
@@ -116,7 +116,7 @@ def test_oct17_total_excludes_everyday_and_unpaid_deposits(tmp_path, monkeypatch
     assert breakdown["total"] == 13481.40
     assert body["balance"] == 13481.40
     assert body["remaining"] == 21518.60
-    assert body["pct"] == 63.4
+    assert body["pct"] == 38.5
     assert body["available"] is True
     assert isinstance(body["on_track"], bool)
     assert body["projected_date"]
@@ -161,7 +161,7 @@ def test_projection_and_brief_use_the_combined_total(tmp_path, monkeypatch):
     assert full["remaining"] == 21518.60
     assert full["remaining"] < cash_only["remaining"]
     assert full["projected_date"] < cash_only["projected_date"]
-    assert round(full["pct"], 1) == 63.4
+    assert round(full["pct"], 1) == 38.5
 
     monkeypatch.setattr(finance_tracker, "LIVE_SPEND_AVAILABLE", False)
     summary = finance_tracker.get_finance_summary()
