@@ -64,18 +64,18 @@ def init_memory():
 - Internship applications sent (outcomes pending)
 
 ## Health & fitness
-- Running PPLRUL split: Push/Pull/Legs/Rest/Upper/Sharms/Rest
+- Running a push/pull/legs split
 - Has a target weight range
 - Sleep has been inconsistent — averaging below 7hr target
 
 ## Finances
-- Savings: saving toward a fixed goal
-- Projected completion: March 2027 — one month behind target
-- Pokemon reselling plan still undefined
+- Saving toward a fixed goal
+- Projected completion: a month behind target
+- Side reselling plan still undefined
 
 ## Personal
 - No passion project defined yet
-- Currently in T2 2026 at UNSW (COMP2511, MATH2601, MATH2901)
+- Currently studying at university
 
 """)
 

@@ -316,8 +316,8 @@ and is left out of the sums (it is not treated as $0).
 
 With the friend share set to 2000 and no everyday export, the 17 Oct 2026
 figures are savings 5120.40 + Revolut own 5480.25 (7480.25 − 2000) =
-cash 10600.65, plus stock 2015 + pending shipping 980.75 + deposits paid
-400 = capital 2880.75, total 13481.40 (63.4% of 35000).
+cash 10600.65, plus stock 1500 + pending shipping 980.75 + deposits paid
+400 = capital 2880.75, total 13481.40 (38.5% of 35000).
 
 The goal block is still returned when nothing could be read (`available:
 false`, `balance: 0`). `available` is true when the savings CSV exists or

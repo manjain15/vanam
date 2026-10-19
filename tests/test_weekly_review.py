@@ -78,7 +78,7 @@ def test_money_rows():
          "exchange_target": {"savings_goal": 35000},
          "breakdown": {"cash": 10600.65, "capital": 2880.75}},
     )
-    assert split[0]["sub"] == "behind · cash $18,511 + tied up $3,677"
+    assert split[0]["sub"] == "behind · cash $10,601 + tied up $2,881"
     assert wr.money_rows({"available": False}, None) == []
 
 
