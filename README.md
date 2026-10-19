@@ -1,6 +1,4 @@
-# Jarvis
-
-Vanam, formerly Jarvis; internals keep the jarvis name.
+# Vanam
 
 A personal assistant that runs my day as a student at UNSW. It plans study
 time around classes, enforces the gym, tracks steps and deadlines, and sends
@@ -12,7 +10,7 @@ It runs on a small VPS for about $3 a month in API costs, and has about 400 test
 
 ## The loop
 
-Most personal dashboards report. Jarvis is built around a loop:
+Most personal dashboards report. Vanam is built around a loop:
 **commit → verify → escalate → adapt.**
 
 - **Commit.** At 05:30 it builds the day: a gym slot, a step target, and
@@ -91,7 +89,7 @@ files. Enforcement state lives in the ledger, so a restart resumes mid-sequence.
   "behind". If Hevy is unreachable, the day doesn't close as a miss. A day the
   enforcer never ran is graded "unenforced", not "missed".
 - **The calendar reflects reality.** A lecture block can only start after
-  that lecture has happened, because recordings don't exist before it. Jarvis
+  that lecture has happened, because recordings don't exist before it. Vanam
   tags its own calendar events, so a re-plan never touches anything else.
 - **The training week follows the workout split,** not the ISO week. A session
   logged on the rest day before a training day counts for that day.
@@ -99,6 +97,8 @@ files. Enforcement state lives in the ledger, so a restart resumes mid-sequence.
   module drops one section of the brief instead of stopping it.
 
 ## Modules
+
+Some modules still carry the project's original `jarvis_` prefix.
 
 | Area | Files |
 |---|---|
