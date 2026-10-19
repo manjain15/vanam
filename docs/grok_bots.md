@@ -1,8 +1,6 @@
 # Grok bots
 
-Vanam, formerly Jarvis; internals keep the jarvis name.
-
-Jarvis talks to Manav through two channels (see `docs/REWORK.md` §2):
+Vanam talks to Manav through two channels (see `docs/REWORK.md` §2):
 
 - **Telegram** handles real-time enforcement only: the wake sequence, step pace, block checks and debt.
 - **The Grok bots** handle everything conversational. This file holds the instructions to paste into each one.
@@ -52,7 +50,7 @@ These are the same rules as `voice.VOICE_RULES`. If you change one, change the o
 
 1. Get the coach token. It's the value after `coach:` in `JARVIS_API_TOKENS` in the VPS `.env`.
 2. In the Grok app, create a new bot called **Coach**.
-3. Connect it to the Jarvis API the same way the career and study bots are connected: the base URL above, with the coach token in the `Authorization` header.
+3. Connect it to the Vanam API the same way the career and study bots are connected: the base URL above, with the coach token in the `Authorization` header.
 4. Paste the shared rules, then the coach instructions below.
 5. Add a daily scheduled task at **21:00**:
    > Run the evening check-in.

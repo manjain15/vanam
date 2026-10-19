@@ -1,8 +1,6 @@
-# Jarvis agent API
+# Vanam agent API
 
-Vanam, formerly Jarvis; internals keep the jarvis name.
-
-A small HTTP API so an external assistant can query Jarvis and correct stale
+A small HTTP API so an external assistant can query Vanam and correct stale
 mentor or internship records. It is a separate process from the localhost
 dashboard (`dashboard.py`, port 5555, no auth) and from the iPhone spend
 logger (`live_spend.py`, port 5556, its own token).
@@ -452,7 +450,7 @@ It returns `{"ok", "date", "summary", "actions"}`.
 - Removes drop routine entries whose label contains the text.
 - The change is stored in `data/schedule_overrides.json` and audited.
 - A change for today re-plans the rest of today: blocks that have started or
-  been answered stay, and only Jarvis's future calendar events are replaced.
+  been answered stay, and only Vanam's future calendar events are replaced.
   The response then has `"replanned": true` and the new `blocks`.
 
 `GET /schedule` returns the weekly routine and the upcoming changes. The

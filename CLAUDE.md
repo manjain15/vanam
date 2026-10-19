@@ -1,6 +1,6 @@
-# Jarvis — Claude Code Agent Instructions
+# Vanam — Claude Code Agent Instructions
 
-Vanam, formerly Jarvis; internals keep the jarvis name.
+Internals (files, paths, services, tags) keep the `jarvis` name.
 
 ## Project
 Personal AI assistant built by Manav (UNSW Year 2). Stack: Python, Flask, Google APIs
@@ -90,7 +90,7 @@ except Exception:
 **API calls:** all Anthropic API calls go through the existing client in the file.
 Do not instantiate new clients. Reuse the pattern already in the file.
 
-**Costs:** flag any change that increases API call frequency. Jarvis runs on ~$3/month —
+**Costs:** flag any change that increases API call frequency. Vanam runs on ~$3/month —
 any feature that adds >$1/month needs explicit approval.
 
 **File writes:** only write to `data/`, `finance/`, or the root jarvis dir.
@@ -123,7 +123,7 @@ Never write outside `/Users/manavjain/jarvis/`.
   if drafts 403). Manual: `python followups.py --draft` or Telegram `/draftmentor`.
 
 - **Calendar deadline sync**: removed — UNSW ICS already syncs assessment dates
-  into Google Calendar, so Jarvis does not create `[Jarvis]` events.
+  into Google Calendar, so Vanam does not create `[Jarvis]` events.
 
 - **Daily ledger + gym enforcer** (`ledger.py`, `enforcer.py`, spec in
   `docs/REWORK.md`): `data/ledger/YYYY-MM-DD.json` per day. iOS Shortcuts post
@@ -141,7 +141,7 @@ Never write outside `/Users/manavjain/jarvis/`.
   Money stakes are deferred (trial).
 - **Morning brief** is rendered by Python (`email_template.py`, dark design in
   `docs/brief_design.html`). Claude writes only the note + one push as JSON.
-  `voice.VOICE_RULES` opens every Jarvis prompt. Preview without sending:
+  `voice.VOICE_RULES` opens every Vanam prompt. Preview without sending:
   `python morning_brief.py --preview /tmp/brief.html`.
 - **Weekly review** (Sundays) uses the same template (`render_sections`): gym by
   day, steps, study hours vs target, money, debt, next week's topics. One Claude
