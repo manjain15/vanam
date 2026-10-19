@@ -1,8 +1,8 @@
 """Sold Membership rows count as reselling costs.
 
-On 17 Oct 2026 the sheet's net P/L was $2,130.00 (46 sold, COGS $8,350.00,
-revenue $10,480.00). Skipping Membership left $2,730.00 (39 sold, COGS
-$7,750.00). The $840 gap is those seven sold rows.
+Example: a sheet's net P/L is $2,130.00 (46 sold, COGS $8,350.00,
+revenue $10,480.00). Skipping Membership would give $2,730.00 (39 sold,
+COGS $7,750.00). The $600 gap is those seven sold rows.
 """
 
 import sys
@@ -87,8 +87,8 @@ def test_zero_sale_costs_stay_out_of_flip_stats():
     assert summary["avg_margin_pct"] == pytest.approx((300.0 + -37.5) / 2)
 
 
-def test_seven_memberships_close_the_oct_2026_gap():
-    """Including $840 of membership COGS moves the old Jarvis totals to the sheet."""
+def test_seven_memberships_close_the_gap():
+    """Including $600 of membership COGS moves the old Jarvis totals to the sheet."""
     items = [
         Item(
             status="sold", category="Cards", name=f"Flip {i}",
@@ -100,7 +100,7 @@ def test_seven_memberships_close_the_oct_2026_gap():
         status="sold", category="Cards", name="Remainder",
         cost=150.0, sale_price=220.0,
     ))
-    membership_costs = [100.0] * 6 + [240.0]
+    membership_costs = [80.0] * 6 + [120.0]
     items.extend(
         Item(
             status="sold", category="Membership", name=f"Sub {i}",
@@ -116,7 +116,7 @@ def test_seven_memberships_close_the_oct_2026_gap():
     assert round(summary["total_cogs"], 2) == 8350.0
     assert round(summary["net_pl"], 2) == 2130.0
     assert summary["by_category"]["Membership"]["count"] == 7
-    assert summary["by_category"]["Membership"]["profit"] == pytest.approx(-840.0)
+    assert summary["by_category"]["Membership"]["profit"] == pytest.approx(-600.0)
     assert summary["by_category"]["Membership"]["revenue"] == 0.0
     assert summary["best_flip"].category == "Cards"
     assert summary["worst_flip"].category == "Cards"
