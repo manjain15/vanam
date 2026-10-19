@@ -1,8 +1,6 @@
-# Jarvis Setup Guide
+# Vanam Setup Guide
 
-Vanam, formerly Jarvis; internals keep the jarvis name.
-
-Complete this once and Jarvis runs forever.
+Complete this once and Vanam runs forever.
 
 ---
 
@@ -34,7 +32,7 @@ that has permission to read your Gmail and Calendar. It's free.
 
 1. Go to https://console.cloud.google.com
 2. Click the project dropdown (top left) → **New Project**
-3. Name it "Jarvis" → **Create**
+3. Name it "Vanam" → **Create**
 
 ### 2b. Enable the APIs
 
@@ -48,23 +46,23 @@ that has permission to read your Gmail and Calendar. It's free.
 2. Click **Create Credentials** → **OAuth client ID**
 3. If prompted, configure the OAuth consent screen first:
    - User Type: **External**
-   - App name: "Jarvis"
+   - App name: "Vanam"
    - Your email as support contact
    - Add your email under **Test users**
    - Save and continue through the rest
 4. Back in Credentials → **Create Credentials** → **OAuth client ID**
    - Application type: **Desktop app**
-   - Name: "Jarvis Desktop"
+   - Name: "Vanam Desktop"
    - Click **Create**
 5. Click **Download JSON**
 6. Rename the downloaded file to `credentials.json`
-7. Move it into your Jarvis folder (same folder as `morning_brief.py`)
+7. Move it into your `jarvis` folder (same folder as `morning_brief.py`)
 
 ---
 
 ## Step 3 — Install Python dependencies
 
-Open a terminal in your Jarvis folder and run:
+Open a terminal in your `jarvis` folder and run:
 
 ```bash
 pip install google-auth google-auth-oauthlib google-auth-httplib2 \
@@ -83,7 +81,7 @@ Open `config.py` and fill in:
 
 ## Step 5 — Copy your profile document
 
-Copy your `jarvis_profile.md` file into the Jarvis folder.
+Copy your `jarvis_profile.md` file into the `jarvis` folder.
 Rename it to `profile.md`.
 
 ---
@@ -106,7 +104,7 @@ A `token.json` file is saved — you won't need to do this again.
 python morning_brief.py --test
 ```
 
-Check your inbox. Your Jarvis brief should arrive within 30 seconds.
+Check your inbox. Your Vanam brief should arrive within 30 seconds.
 
 ---
 
@@ -142,7 +140,7 @@ This prints the exact cron command or Task Scheduler instructions for your syste
 jarvis/
 ├── morning_brief.py     ← main script
 ├── config.py            ← your settings
-├── profile.md           ← your Jarvis profile document
+├── profile.md           ← your Vanam profile document
 ├── credentials.json     ← from Google Cloud (Step 2)
 ├── token.json           ← auto-created after --setup
 ├── SETUP_GUIDE.md       ← this file
@@ -161,7 +159,7 @@ That's under $1/month to have a personalised AI briefing every day.
 
 ## Agent API
 
-An external assistant can query Jarvis over HTTP. Setup, auth, and curl
+An external assistant can query Vanam over HTTP. Setup, auth, and curl
 examples are in `docs/API.md`. The server is `agent_api.py` on
 `127.0.0.1:5557` and requires `JARVIS_API_TOKEN`. Put it behind HTTPS
 (Cloudflare Tunnel, Tailscale, or a reverse proxy). Do not open the raw port.
@@ -170,4 +168,4 @@ examples are in `docs/API.md`. The server is `agent_api.py` on
 
 Your brief gets smarter the more you maintain `profile.md`.
 Set a reminder to update it once a week — especially the **Active Projects** table.
-The more accurate it is, the more Jarvis feels like it actually knows you.
+The more accurate it is, the more Vanam feels like it actually knows you.

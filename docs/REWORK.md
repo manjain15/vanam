@@ -1,18 +1,16 @@
-# Jarvis rework — commit, verify, escalate
-
-Vanam, formerly Jarvis; internals keep the jarvis name.
+# Vanam rework — commit, verify, escalate
 
 Status: **draft for sign-off**. No code until approved.
 Reference design: `docs/brief_design.html` (dark, approved).
 
 ## 1. Why
 
-Jarvis today records and reports. The check-in asks ~20 questions, the answers
+Vanam today records and reports. The check-in asks ~20 questions, the answers
 become a summary, and the summary becomes one paragraph in the next brief.
 Nothing is committed, checked, or followed up.
 
 The new loop: **commit → verify → escalate → adapt**. Every day has a short
-list of concrete commitments. Jarvis checks each one against evidence, not
+list of concrete commitments. Vanam checks each one against evidence, not
 self-report. A miss costs something.
 
 ## 2. Channels
@@ -101,7 +99,7 @@ follow-up. For SCIF1000:
 ## 5. Gym — wake sequence
 
 Wake signal: an iOS Shortcut runs on **alarm stopped** and sends `POST /events {"type":"wake"}`.
-Fallback: if there's no wake event by `slot − 30 min`, Jarvis starts anyway.
+Fallback: if there's no wake event by `slot − 30 min`, Vanam starts anyway.
 
 Telegram, on a gym day:
 
@@ -113,7 +111,7 @@ Telegram, on a gym day:
 | slot +0:30 | — | geofence `POST /events {"type":"gym_arrive"}` | `No arrival. Reason, or go.` |
 | slot +2:00 | — | Hevy workout today | mark missed |
 
-**Excuse gate.** A reply starting with `skip` must include a reason. Jarvis checks it:
+**Excuse gate.** A reply starting with `skip` must include a reason. Vanam checks it:
 
 - Sleep < 6h (Shortcut-reported or Google Health) → moved to the evening slot, not excused.
 - Calendar has < 75 min free before 21:00 → 35-min version allowed.
@@ -129,7 +127,7 @@ short version stays 35 min.
 
 An iOS Shortcut personal automation runs at 10:00, 13:00, 16:00, 19:00 and 21:00.
 It reads today's steps from Apple Health and sends `POST /events {"type":"steps","count":N}`.
-The count Jarvis keeps is the higher of that shortcut reading and Google
+The count Vanam keeps is the higher of that shortcut reading and Google
 Health's daily total (Fitbit, which does not sync to Apple Health). Health is
 read when a shortcut reading lands, when a pace checkpoint is judged, and
 again before the day is graded. A failed or empty Health fetch leaves the
@@ -149,7 +147,7 @@ records the sources (`shortcut+google_health`).
 The pace scales with the day's target (25 / 50 / 70 / 85 / 100%), so step
 debt raises every checkpoint.
 
-Jarvis only messages when Manav is behind. The fix is sized at ~100 steps/min
+Vanam only messages when Manav is behind. The fix is sized at ~100 steps/min
 and placed in the calendar: `2,000 behind 5,000 pace. 20 min walk. Next free 14:00–15:00.`
 No Claude call.
 
@@ -207,7 +205,7 @@ New `data/areas.json`:
 ```
 
 - `last_touched` updates from evidence where it exists: GitHub commits (`GITHUB_TOKEN`), applications in `term_context`, mentor contact, and weight from Google Health. Otherwise it comes from the check-in.
-- Days since last touched drives the daily "One push". The push is concrete and Jarvis does the prep work: a drafted LinkedIn or email message in Gmail (draft only, like `followups.py`), a Google Task with a date, or a project block in the calendar.
+- Days since last touched drives the daily "One push". The push is concrete and Vanam does the prep work: a drafted LinkedIn or email message in Gmail (draft only, like `followups.py`), a Google Task with a date, or a project block in the calendar.
 - Grok bots read areas and update them with `PATCH /areas/<name>`.
 
 ## 9. Evening check-in (Grok)
@@ -217,7 +215,7 @@ Scheduled Grok task at 21:00 calls `GET /checkin/today`. It returns:
 - **facts**, prefilled from the ledger and evidence: gym status, steps, study blocks done or partial, weight, spend, commits.
 - **2–4 questions**, only about what the evidence can't tell: partial study blocks ("what's left?"), a neglected area ("what's blocking X?"), and tomorrow's one non-negotiable.
 
-The bot asks those questions and sends `POST /checkin` with the answers. Jarvis turns each answer into an action:
+The bot asks those questions and sends `POST /checkin` with the answers. Vanam turns each answer into an action:
 
 - Leftover study goes into tomorrow's blocks.
 - A blocker becomes an area `next_action` plus a scheduled block.
@@ -276,9 +274,9 @@ and a real-device test before cut-over.
 
 ## 13. Phone setup (one-time, manual)
 
-1. Shortcut "Jarvis wake": Automation → Alarm → is stopped → `POST /events wake`.
-2. Shortcut "Jarvis gym": Automation → Arrive at gym location → `POST /events gym_arrive`.
-3. Shortcut "Jarvis steps": 5 time-of-day automations → Health: steps today → `POST /events steps`.
+1. Shortcut "Vanam wake": Automation → Alarm → is stopped → `POST /events wake`.
+2. Shortcut "Vanam gym": Automation → Arrive at gym location → `POST /events gym_arrive`.
+3. Shortcut "Vanam steps": 5 time-of-day automations → Health: steps today → `POST /events steps`.
 4. Each Shortcut uses the `phone` token. Each automation has "Ask before running" turned off.
 
 ## 14. Cost
