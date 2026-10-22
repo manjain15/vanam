@@ -102,6 +102,22 @@ def test_prompt_uses_the_shared_voice():
     assert '"priorities"' in prompt
 
 
+def test_unreleased_spec_is_mentioned_neutrally(monkeypatch):
+    monkeypatch.setattr(wr, "TERM_CONTEXT_AVAILABLE", True)
+    monkeypatch.setattr(wr, "get_term_summary", lambda: {
+        "term_name": "T3", "term_week": 8, "subjects": ["MATH2931"],
+        "assessments": [{
+            "subject": "MATH2931", "name": "Assignment 2", "due": "2026-11-11",
+            "days_left": 20, "weight": 20, "spec_released": False,
+        }],
+        "internships": [], "mentor": {}, "portfolio_targets": [], "exchange_target": {},
+    })
+    monkeypatch.setattr(wr, "get_flags", lambda: [])
+    text = wr.collect_term_context()
+    assert "MATH2931 — Assignment 2 [20%] → spec not out yet (due 2026-11-11)" in text
+    assert "Start" not in text
+
+
 def test_render_sections_leaves_out_empty_ones():
     page, text = email_template.render_sections(
         "Week 5 review", "12 Oct – 17 Oct · T3 2026", "Good week.",

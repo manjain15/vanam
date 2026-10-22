@@ -628,11 +628,22 @@ def test_fallback_comp_is_practice_and_other_courses_stay_notes():
 
 
 def test_comp_due_assessment_still_wins_over_a_generic_problem_set():
-    context = {"COMP3121": {"week": 5, "notes": [
-        DP_NOTES, "Assignment 2 due Fri 16 Oct (3d, 20%)",
-    ]}}
+    context = {"COMP3121": {
+        "week": 5,
+        "notes": [DP_NOTES],
+        "urgent": True,
+        "urgent_assessments": ["Assignment 2"],
+    }}
     tasks = day_plan.write_tasks([("COMP3121", "study", at(9), at(10))], context, [])
     assert tasks == ["Assignment 2"]
+
+
+def test_due_string_without_the_urgent_flag_does_not_win():
+    context = {"COMP3121": {"week": 5, "notes": [
+        DP_NOTES, "Assignment 2 due Fri 16 Oct (3d, 20%)",
+    ], "urgent": False, "urgent_assessments": []}}
+    tasks = day_plan.write_tasks([("COMP3121", "study", at(9), at(10))], context, [])
+    assert tasks == [PRACTICE]
 
 
 def test_comp_note_review_leftover_becomes_practice():

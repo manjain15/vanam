@@ -5,10 +5,11 @@ Turns the loaded course data (assessments in term_context.json + weekly topic
 schedules in courses/*.json) into proactive *alerts* that keep Manav ahead of
 the term, rather than just informational lists:
 
-  1. Ramp-up warnings — for each assessment with a due date, an escalating nudge
-     whose lead time scales with the assessment's weight (a 30% midterm starts
-     warning earlier than a 5% class test). Tells him to START, not just that
-     it's due.
+  1. Ramp-up warnings — for each assessment with a due date and a released
+     spec, an escalating nudge whose lead time scales with the assessment's
+     weight (a 30% midterm starts warning earlier than a 5% class test).
+     Tells him to START, not just that it's due. An assignment whose spec
+     is not out yet stays silent (term_context.spec_is_released).
 
   2. Revision triggers — for test-type assessments that declare `covers_weeks`,
      surfaces (a few days out) exactly which weeks/topics the test covers, pulled
@@ -72,23 +73,27 @@ def _load_assessments(today):
             except Exception:
                 continue
             out.append({
-                "subject":      subject["code"],
-                "name":         a["name"],
-                "due":          due,
-                "days_left":    (due - today).days,
-                "weight":       a.get("weight"),
-                "covers_weeks": a.get("covers_weeks") or [],
+                "subject":       subject["code"],
+                "name":          a["name"],
+                "due":           due,
+                "days_left":     (due - today).days,
+                "weight":        a.get("weight"),
+                "covers_weeks":  a.get("covers_weeks") or [],
+                "spec_released": term_context.spec_is_released(a),
             })
     return out
 
 
 def get_assessment_alerts(today=None):
-    """Escalating ramp-up nudges for assessments inside their (weight-scaled) lead window."""
+    """Escalating ramp-up nudges for released assessments inside their lead window.
+
+    Spec not out yet: no "start scaffolding" alert, however close the date is.
+    """
     today = _today(today)
     alerts = []
     for a in sorted(_load_assessments(today), key=lambda x: x["days_left"]):
         d = a["days_left"]
-        if d < 0:
+        if d < 0 or not a.get("spec_released"):
             continue
         lead = _lead_days(a["weight"])
         if d > lead:
@@ -124,7 +129,7 @@ def get_revision_alerts(today=None):
     for a in sorted(_load_assessments(today), key=lambda x: x["days_left"]):
         d = a["days_left"]
         weeks = a.get("covers_weeks")
-        if not weeks or d < 0:
+        if not weeks or d < 0 or not a.get("spec_released"):
             continue
         lead = min(_REVISION_LEAD, _lead_days(a["weight"]))
         if d > lead:

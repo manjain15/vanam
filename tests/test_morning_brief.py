@@ -182,6 +182,9 @@ def test_due_rows():
     rows = morning_brief.due_rows(upcoming)
     assert rows[0] == {"label": "MATH2931 Assignment 2 (20%)", "value": "Wed 11 Nov · 30d", "miss": False}
     assert rows[1] == {"label": "COMP3121 Quiz", "value": "Tue 13 Oct · tomorrow", "miss": True}
+    held = {"subject": "MATH2931", "name": "Assignment 2", "due": "2026-11-11",
+            "days_left": 10, "weight": 20, "spec_released": False}
+    assert morning_brief.due_rows([held, upcoming[1]]) == [rows[1]]
 
 
 def test_yesterday_stats():

@@ -122,7 +122,10 @@ def calendar_busy():
 
 
 def assessment_boosts(date, courses):
-    """{course: multiplier} for courses with an assessment inside its lead window."""
+    """{course: multiplier} for a released assessment inside its lead window.
+
+    Spec not out yet: no boost, including inside the 3-day close window.
+    """
     try:
         from study_tracker import _lead_days, _load_assessments
         upcoming = _load_assessments(date)
@@ -132,6 +135,8 @@ def assessment_boosts(date, courses):
     for a in upcoming:
         if a["subject"] not in courses or a["days_left"] < 0:
             continue
+        if not a.get("spec_released"):
+            continue
         if a["days_left"] <= CLOSE_DAYS:
             boosts[a["subject"]] = max(boosts.get(a["subject"], 1), BOOST_CLOSE)
         elif a["days_left"] <= _lead_days(a["weight"]):
@@ -140,7 +145,13 @@ def assessment_boosts(date, courses):
 
 
 def course_context(date, courses):
-    """Per-course text for the task prompt: week topics, assessments, study style."""
+    """Per-course text for the task prompt: week topics, study style, urgent flag.
+
+    ``urgent`` is true only when a spec-released assessment is inside its
+    weight-scaled lead window (study_tracker._lead_days). The due note is
+    added in that same case. An assignment with no spec stays off the flag,
+    so the task writer cannot treat it as due work.
+    """
     out = {}
     try:
         import course_schedule
@@ -148,10 +159,11 @@ def course_context(date, courses):
     except Exception:
         week = None
     try:
-        from study_tracker import _load_assessments
+        from study_tracker import _lead_days, _load_assessments
         upcoming = _load_assessments(date)
     except Exception:
         upcoming = []
+        _lead_days = None
     try:
         from term_context import get_study_plan, study_style
         plan = get_study_plan()
@@ -169,10 +181,25 @@ def course_context(date, courses):
                         lines.append(f"Week {week} classes and tasks: {'; '.join(c['activities'])}")
             except Exception:
                 pass
-        for a in upcoming:
-            if a["subject"] == code and 0 <= a["days_left"] <= 28:
-                lines.append(f"{a['name']} due {a['due']:%a %d %b} ({a['days_left']}d, {a.get('weight')}%)")
-        out[code] = {"week": week, "notes": lines, "study_style": styles.get(code, "notes")}
+        urgent_names = []
+        if _lead_days is not None:
+            for a in upcoming:
+                if a.get("subject") != code or not a.get("spec_released"):
+                    continue
+                days = a.get("days_left")
+                if not isinstance(days, int) or days < 0 or days > _lead_days(a.get("weight")):
+                    continue
+                urgent_names.append(a["name"])
+                lines.append(
+                    f"{a['name']} due {a['due']:%a %d %b} ({days}d, {a.get('weight')}%)"
+                )
+        out[code] = {
+            "week": week,
+            "notes": lines,
+            "study_style": styles.get(code, "notes"),
+            "urgent": bool(urgent_names),
+            "urgent_assessments": urgent_names,
+        }
     return out
 
 
@@ -700,8 +727,9 @@ def fallback_task(course, kind, context, carried, minutes=None, style=None):
 
     Practice-style courses (COMP by default) get practice problems on the
     week's topic. Note-review leftovers are dropped for those courses.
-    Every other course keeps the previous wording. A due assessment still
-    wins over a generic problem set.
+    Every other course keeps the previous wording. An assessment wins only
+    when the course context has urgent true (spec released and inside the
+    lead window). A "due" string in the notes is not enough.
     """
     if style is None:
         style = _styles_for([course]).get(course, "notes")
@@ -715,10 +743,10 @@ def fallback_task(course, kind, context, carried, minutes=None, style=None):
     label = f"W{week}" if week else "this week's"
     if kind == "lecture":
         return f"{label} lectures"
-    notes = (context.get(course) or {}).get("notes") or []
-    due = [n for n in notes if " due " in n]
-    if due:
-        task = due[0].split(" due ")[0]
+    info = context.get(course) or {}
+    urgent = info.get("urgent_assessments") or []
+    if info.get("urgent") and urgent:
+        task = str(urgent[0])
         if not (practice and is_note_review(task)):
             return task
     if practice:
@@ -782,7 +810,7 @@ def _task_prompt(placed, context, carry, labels, styles):
     rules = [
         '- Each task fits its block\'s minutes. Specific and checkable: "Assignment 2 Q1-3", not "study".',
         "- Unfinished tasks carried from yesterday go first, in the first block for that course.",
-        "- A due assessment comes before a generic problem set or note review.",
+        "- If urgent is true, the first name in urgent_assessments comes before a generic problem set or note review.",
         '- Lecture blocks are for watching the recorded lecture named in "covers" (it has already',
         '  happened). "W5 lecture 2 + notes" is fine on a lecture block. Never a lecture that hasn\'t happened yet.',
         "- A study block is never lecture-watching.",

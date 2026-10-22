@@ -21,6 +21,10 @@ USAGE:
 
 UPDATE WORKFLOW:
   - Add assessment due dates as soon as they appear on Moodle
+  - Mark spec_released true once the spec is out (/spec or PATCH /assessments).
+    Assignments and projects omit the field until then, and the planner
+    does not schedule them. Exams, quizzes, and in-class tests are treated
+    as released when the field is missing (there is no spec to wait for).
   - Update internship statuses after each touchpoint
   - Update mentor.last_contact after every conversation
   - Bump term.week each Monday (or automate via start_date)
@@ -84,11 +88,19 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 class TermRecordNotFound(LookupError):
-    """No mentor or internship record matched the request."""
+    """No mentor, internship, or assessment record matched the request."""
 
 
 class TermRecordConflict(Exception):
-    """The internship match is ambiguous, or that application already exists."""
+    """The match is ambiguous, or that application already exists.
+
+    ``candidates`` is set when several assessments match a spec update.
+    Internship conflicts leave it empty.
+    """
+
+    def __init__(self, message, candidates=None):
+        super().__init__(message)
+        self.candidates = list(candidates or [])
 
 
 class TermContextUnreadable(Exception):
@@ -558,10 +570,230 @@ def current_term_week(ctx: dict) -> int:
         return ctx.get("term", {}).get("week", 1)
 
 
+# ── Assessment spec ───────────────────────────────────────────────────────────
+# spec_released is optional on each assessment. Missing on older
+# term_context.json rows: exams, quizzes, midterms, and in-class tests are
+# treated as released (nothing separate to wait for). Assignments, projects,
+# and anything else stay unreleased until the owner sets the flag. The
+# planner, boosts, and start-now alerts all read the resolved value.
+
+_SPEC_TOKEN = re.compile(r"[a-z0-9]+")
+_RELEASED_NAME = re.compile(
+    r"\b(?:exams?|examinations?|quizzes|quiz|mid-?terms?|tests?|in-class|finals?)\b",
+    re.I,
+)
+_RELEASED_TYPES = {
+    "exam", "examination", "final", "final_exam", "quiz", "midterm", "mid_term",
+    "test", "class_test", "in_class", "in_class_test", "classtest",
+}
+_HELD_TYPES = {
+    "assignment", "project", "lab", "report", "essay", "homework", "coursework",
+}
+
+
+def _norm_type(value):
+    """Lower-case assessment type with spaces and hyphens as underscores."""
+    return re.sub(r"[\s-]+", "_", str(value or "").strip().lower())
+
+
+def spec_is_released(assessment):
+    """Whether the owner can start this assessment.
+
+    An explicit boolean ``spec_released`` wins. When the key is missing
+    (or is not a boolean), the type and then the name are used:
+
+    - released: exam, quiz, midterm, test, in-class test, final
+    - held: assignment, project, lab, report, essay, homework, or anything
+      else that is not one of the released kinds
+
+    A non-boolean value is ignored so a bad entry still loads.
+    """
+    if not isinstance(assessment, dict):
+        return False
+    if isinstance(assessment.get("spec_released"), bool):
+        return assessment["spec_released"]
+    kind = _norm_type(assessment.get("type"))
+    if kind in _RELEASED_TYPES:
+        return True
+    if kind in _HELD_TYPES:
+        return False
+    if _RELEASED_NAME.search(str(assessment.get("name") or "")):
+        return True
+    return False
+
+
+def _spec_tokens(text):
+    """Lower-case alphanumeric tokens from a course code or assessment name."""
+    return _SPEC_TOKEN.findall(str(text or "").casefold())
+
+
+def _token_hits(query_token, haystack):
+    """True when query_token equals a haystack token, or prefixes one of length >= 3."""
+    for tok in haystack:
+        if query_token == tok:
+            return True
+        if len(query_token) >= 3 and tok.startswith(query_token):
+            return True
+    return False
+
+
+def _name_rank(query, name):
+    """2 exact token match, 1 every query token hits, 0 no match."""
+    q = _spec_tokens(query)
+    n = _spec_tokens(name)
+    if not q or not n:
+        return 0
+    if q == n:
+        return 2
+    if all(_token_hits(tok, n) for tok in q):
+        return 1
+    return 0
+
+
+def _course_rank(code, token):
+    """2 exact course code, 1 prefix of 3+ characters, 0 otherwise."""
+    course = str(code or "").casefold()
+    query = str(token or "").casefold()
+    if not course or not query:
+        return 0
+    if course == query:
+        return 2
+    if len(query) >= 3 and course.startswith(query):
+        return 1
+    return 0
+
+
+def _iter_assessments(ctx):
+    """Yield (course code, assessment dict) for every named assessment."""
+    for subject in ctx.get("subjects") or []:
+        if not isinstance(subject, dict):
+            continue
+        code = str(subject.get("code") or "").strip()
+        if not code:
+            continue
+        for record in subject.get("assessments") or []:
+            if isinstance(record, dict) and str(record.get("name") or "").strip():
+                yield code, record
+
+
+def _assessment_public(code, record):
+    """JSON-safe view of one assessment. Does not include the live dict."""
+    return {
+        "subject": code,
+        "name": record.get("name"),
+        "due": record.get("due"),
+        "weight": record.get("weight"),
+        "status": record.get("status", "pending"),
+        "spec_released": spec_is_released(record),
+    }
+
+
+def find_assessment_matches(ctx, subject, name):
+    """Assessments matching a course fragment and a name fragment.
+
+    ``subject`` empty searches every course, and ``name`` may then include
+    the course code ("MATH2931 Assignment 2"). Exact course and exact name
+    beat a prefix. Several remaining hits is ambiguous. Each item has
+    subject, name, due, weight, status, spec_released, and record (the
+    live dict inside ``ctx``).
+    """
+    subject = (subject or "").strip()
+    name = (name or "").strip()
+    rows = list(_iter_assessments(ctx))
+    if subject:
+        ranked = [(_course_rank(code, subject), code, record) for code, record in rows]
+        ranked = [item for item in ranked if item[0]]
+        if not ranked:
+            return []
+        best = max(item[0] for item in ranked)
+        rows = [(code, record) for rank, code, record in ranked if rank == best]
+
+    scored = []
+    if name:
+        for code, record in rows:
+            rank = _name_rank(name, record.get("name"))
+            if rank:
+                scored.append((rank, code, record))
+        if not scored and not subject:
+            query_tokens = _spec_tokens(name)
+            for code, record in rows:
+                hay = _spec_tokens(code) + _spec_tokens(record.get("name"))
+                if query_tokens and all(_token_hits(tok, hay) for tok in query_tokens):
+                    exact = (
+                        _spec_tokens(record.get("name")) == query_tokens
+                        or hay == query_tokens
+                    )
+                    scored.append((2 if exact else 1, code, record))
+    if not scored:
+        return []
+    best = max(rank for rank, _code, _record in scored)
+    chosen = [(code, record) for rank, code, record in scored if rank == best]
+    out = []
+    seen = set()
+    for code, record in chosen:
+        key = (code.casefold(), str(record.get("name")).casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        packed = _assessment_public(code, record)
+        packed["record"] = record
+        out.append(packed)
+    return out
+
+
+def split_spec_args(ctx, args):
+    """Split ``/spec`` arguments into ``(subject, name)``.
+
+    A unique course code, or a unique 3+ character prefix, as the first
+    token is the subject and the rest is the name. A course token with no
+    name returns ``(code, "")`` so the caller can ask for the name.
+    Otherwise the whole line is the name and the subject is empty.
+    """
+    args = [str(part) for part in (args or []) if str(part).strip()]
+    if not args:
+        return "", ""
+    codes = []
+    for subject in ctx.get("subjects") or []:
+        if isinstance(subject, dict) and subject.get("code"):
+            codes.append(str(subject["code"]))
+    ranks = [(_course_rank(code, args[0]), code) for code in codes]
+    best = max((rank for rank, _code in ranks), default=0)
+    winners = [code for rank, code in ranks if rank == best and rank > 0]
+    if len(winners) == 1 and len(args) == 1:
+        return winners[0], ""
+    if len(winners) == 1 and len(args) > 1:
+        return winners[0], " ".join(args[1:]).strip()
+    return "", " ".join(args).strip()
+
+
+def _clean_spec_query(subject, name, released):
+    """Validate a spec update. Returns stripped subject, name, and the bool."""
+    if not isinstance(released, bool):
+        raise ValueError("spec_released must be a boolean")
+    if not isinstance(subject, str) or not isinstance(name, str):
+        raise ValueError("subject and name must be strings")
+    subject = subject.strip()
+    name = name.strip()
+    if not name:
+        raise ValueError("name is required")
+    if len(subject) > 40:
+        raise ValueError("subject must be 40 characters or fewer")
+    if len(name) > 200:
+        raise ValueError("name must be 200 characters or fewer")
+    for field, text in (("subject", subject), ("name", name)):
+        if any(ord(ch) < 32 for ch in text):
+            raise ValueError(f"{field} contains control characters")
+    return subject, name, released
+
+
 # ── Upcoming assessments ──────────────────────────────────────────────────────
 
 def get_upcoming_assessments(ctx: dict, days_ahead: int = 21) -> list:
-    """Returns assessments due within the next N days, sorted by due date."""
+    """Returns assessments due within the next N days, sorted by due date.
+
+    Each row includes the resolved ``spec_released`` flag. The stored JSON
+    is not modified; a missing field is inferred by spec_is_released.
+    """
     today     = datetime.date.today()
     cutoff    = today + datetime.timedelta(days=days_ahead)
     upcoming  = []
@@ -580,12 +812,13 @@ def get_upcoming_assessments(ctx: dict, days_ahead: int = 21) -> list:
             if today <= due <= cutoff:
                 days_left = (due - today).days
                 upcoming.append({
-                    "subject":   subject["code"],
-                    "name":      a["name"],
-                    "due":       due_raw,
-                    "days_left": days_left,
-                    "weight":    a.get("weight"),
-                    "status":    a.get("status", "pending"),
+                    "subject":       subject["code"],
+                    "name":          a["name"],
+                    "due":           due_raw,
+                    "days_left":     days_left,
+                    "weight":        a.get("weight"),
+                    "status":        a.get("status", "pending"),
+                    "spec_released": spec_is_released(a),
                 })
 
     return sorted(upcoming, key=lambda x: x["days_left"])
@@ -688,8 +921,11 @@ def get_flags() -> list:
     flags += get_internship_flags(ctx)
     flags += get_mentor_flags(ctx)
 
-    # Assessment warnings (7 days)
+    # Assessment warnings (7 days). No spec yet: stay quiet. The weekly
+    # review is the place that may say "spec not out yet".
     for a in get_upcoming_assessments(ctx, days_ahead=7):
+        if not a.get("spec_released"):
+            continue
         flags.append(
             f"{a['subject']} — {a['name']} due in {a['days_left']} day(s)"
             + (f" ({a['weight']}%)" if a.get('weight') else "")
@@ -757,6 +993,58 @@ def mark_assessment_done(subject_code: str, assessment_name: str):
     else:
         print("❌ Assessment not found")
     return matched.get("name")
+
+
+def set_spec_released(subject, name, released=True, audit_fn=None):
+    """Set ``spec_released`` on one assessment and return the public row.
+
+    ``subject`` is a course code or a prefix. ``name`` is the assessment
+    name or a fragment; with an empty subject it may include the course
+    code. One match is updated. None raises TermRecordNotFound. Several
+    raise TermRecordConflict with ``candidates`` and do not write.
+
+    A stored boolean that already equals ``released`` is not audited.
+    A missing field is a change, including when inference would already
+    say the same thing, so the owner's confirmation is what gets stored.
+    ``audit_fn(old, new, record)`` runs inside the context lock before the
+    file is replaced. If it raises, term_context.json stays as it was.
+    """
+    subject, name, released = _clean_spec_query(subject, name, released)
+    result = {}
+
+    def _mutate(ctx):
+        matches = find_assessment_matches(ctx, subject, name)
+        label = f"{subject} {name}".strip()
+        if not matches:
+            raise TermRecordNotFound(f"no assessment matching {label}")
+        if len(matches) > 1:
+            raise TermRecordConflict(
+                "multiple assessments match",
+                candidates=[{k: v for k, v in match.items() if k != "record"} for match in matches],
+            )
+        match = matches[0]
+        record = match["record"]
+        if isinstance(record.get("spec_released"), bool) and record["spec_released"] is released:
+            public = _assessment_public(match["subject"], record)
+            result["changed"] = False
+            result["changes"] = {}
+            result["assessment"] = public
+            return
+        old_value = record["spec_released"] if "spec_released" in record else None
+        record["spec_released"] = released
+        public = _assessment_public(match["subject"], record)
+        old = {"spec_released": old_value}
+        new = {"spec_released": released}
+        if audit_fn is not None:
+            audit_fn(old, new, public)
+        result["changed"] = True
+        result["changes"] = {"spec_released": {"old": old_value, "new": released}}
+        result["assessment"] = public
+
+    mutate_context(_mutate)
+    if result.get("changed"):
+        print(f"✅ {result['assessment']['subject']} — {result['assessment']['name']}: spec_released={released}")
+    return result
 
 
 def _parse_iso_date(value, field):

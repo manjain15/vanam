@@ -21,9 +21,10 @@ The agent API reuses existing code:
   and reselling cashflow plus the sheet P&L (`analyse_reselling`,
   `reselling_tracker`). They do not return raw account numbers.
 - `POST /spend` calls `live_spend.log_spend` (the Back Tap path is unchanged).
-- `PATCH /mentor`, `PATCH /internships`, and `POST /internships` write
-  `term_context.json` through `term_context.mutate_context`, the same locked
-  atomic update the flags read on the next request.
+- `PATCH /mentor`, `PATCH /internships`, `POST /internships`, and
+  `PATCH /assessments` write `term_context.json` through
+  `term_context.mutate_context`, the same locked atomic update the flags
+  read on the next request. `PATCH /assessments` is owner-only.
 - `POST /events` and `GET /today` use the daily ledger (`ledger.py`,
   `data/ledger/YYYY-MM-DD.json`). See `docs/REWORK.md`.
 - `GET /checkin/today` and `POST /checkin` run the coach's evening check-in
@@ -60,9 +61,9 @@ can call):
 | `phone` | `/health`, `/events` |
 | `owner` (`JARVIS_API_TOKEN`) | every route |
 
-`/ask`, `/memory/search`, and `/brief` stay on the owner token unless you add
-them to a bot's tuple in `BOT_ROUTE_ALLOWLIST`. A known route outside the
-caller's list is `403 {"error": "forbidden"}`.
+`/ask`, `/memory/search`, `/brief`, and `PATCH /assessments` stay on the owner
+token unless you add them to a bot's tuple in `BOT_ROUTE_ALLOWLIST`. A known
+route outside the caller's list is `403 {"error": "forbidden"}`.
 
 Generate a token with:
 
@@ -191,9 +192,15 @@ curl -sS -H "Authorization: Bearer $JARVIS_API_TOKEN" \
 
 `term` is the term summary (subjects, assessments inside the summary's own
 window, internships, mentor, portfolio). `deadlines` is every non-submitted
-assessment due inside `days`. `calendar` is Google Calendar events from now
-through `days`. If Calendar auth fails, `calendar` is `[]` and
-`calendar_error` is `"calendar unavailable"`; term data is still returned.
+assessment due inside `days`. Each assessment includes `spec_released`.
+When the stored field is missing, exams, quizzes, midterms, and in-class
+tests are reported released, and assignments, projects, and anything else
+are reported not released. The planner does not schedule an assessment
+until `spec_released` is true and the due date is inside its weight-scaled
+lead window (21 days at 25% or more, 14 days at 10% or more, 7 days below
+that, 10 days when the weight is missing). `calendar` is Google Calendar
+events from now through `days`. If Calendar auth fails, `calendar` is `[]`
+and `calendar_error` is `"calendar unavailable"`; term data is still returned.
 
 ### Memory search
 
@@ -555,17 +562,55 @@ curl -sS -X POST \
 
 The new row is what `GET /flags` and `GET /context` read on the next request. No process restart.
 
+### Mark an assessment spec as released
+
+`PATCH /assessments`. Owner token only (it is not on a bot allowlist). `subject` and `name` are required. `spec_released` is optional and defaults to `true`; send `false` to take the spec back. Optional `reason` follows the mentor rules. A body field named `actor` is ignored.
+
+`subject` is a course code or a prefix of at least 3 characters (`MATH` matches `MATH2931` when that is the only MATH course). `name` is the assessment name or a fragment: case-insensitive, and a token of 3 or more characters may be a prefix (`assign` matches `Assignment`). An exact name beats a fragment. With several hits the response is `409` and the file is not modified:
+
+```
+{"error": "multiple assessments match", "candidates": [
+  {"subject": "MATH2931", "name": "Assignment 1", "due": "2026-10-01", "weight": 20, "status": "pending", "spec_released": false}
+]}
+```
+
+Unknown assessment is `404`. `spec_released` must be a JSON boolean. `"true"` and `null` are `400`.
+
+An assessment with no `spec_released` field still loads. Assignments and projects are treated as not released until this route (or Telegram `/spec COURSE name`) stores `true`. Exams, quizzes, midterms, and in-class tests are treated as released when the field is missing, because there is no spec to wait for. An explicit boolean always wins over that inference.
+
+Until the flag is true, Vanam does not boost that course for the assessment, does not put a "due" note on study blocks, does not pick it as the fallback task, and does not raise a start-now alert. The Sunday weekly review may mention it once as "spec not out yet". It is not a task.
+
+No migration is required after deploy. A row that omits the field stays omitted, so an assignment such as MATH2931 Assignment 2 remains unreleased until you mark it.
+
+```
+curl -sS -X PATCH \
+  -H "Authorization: Bearer $JARVIS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "subject": "MATH2931",
+    "name": "Assignment 2",
+    "reason": "Spec posted on Moodle"
+  }' \
+  https://<your-host>/assessments
+```
+
+`{"ok": true, "changed": true, "audit_logged": true, "changes": {"spec_released": {"old": null, "new": true}}, "assessment": {"subject": "MATH2931", "name": "Assignment 2", "spec_released": true, ...}}`
+
+`changed` is false when the stored boolean already matches. That response is not audited.
+
+Telegram, from the owner chat: `/spec MATH2931 Assignment 2`. Several matches are listed as follow-up commands and nothing is written. `/spec` only sets the flag true.
+
 ### Why writes apply immediately
 
 `term_updates.py` and `update_profile.py` queue overnight Claude suggestions until you approve them (`python term_updates.py`, or Telegram `/approve`). `proposal_trust.py` only counts those approve/reject decisions. Nothing reads the score to allow or block a write.
 
-These routes are the external-agent equivalent of `/mentor` and `/internship`: the caller already holds `JARVIS_API_TOKEN`. They apply in the same locked `mutate_context` path, with a stricter allowlist than the Telegram command's free-form `key=value` pairs. A queued correction would leave `GET /flags` stale until a manual review, so the write hits `term_context.json` directly. The accountability record is the audit log below.
+These routes are the external-agent equivalent of `/mentor`, `/internship`, and `/spec`: the caller already holds `JARVIS_API_TOKEN`. They apply in the same locked `mutate_context` path, with a stricter allowlist than the Telegram command's free-form `key=value` pairs. A queued correction would leave `GET /flags` stale until a manual review, so the write hits `term_context.json` directly. The accountability record is the audit log below.
 
 Bad input returns `400 {"error": "..."}` and leaves `term_context.json` unchanged. A failed audit append also leaves the context file unchanged.
 
 ### Audit log
 
-Each real change appends one JSON line to `data/agent_api_audit.jsonl` on the VPS (the `data/` directory is gitignored). The line has `ts`, `actor`, `action` (`mentor_update`, `internship_update`, or `internship_add`), `target`, `reason`, `old`, and `new`. There is no HTTP route for the log.
+Each real change appends one JSON line to `data/agent_api_audit.jsonl` on the VPS (the `data/` directory is gitignored). The line has `ts`, `actor`, `action` (`mentor_update`, `internship_update`, `internship_add`, or `assessment_spec`), `target`, `reason`, `old`, and `new`. There is no HTTP route for the log. `assessment_spec` targets `{"subject", "name"}`. The actor is `owner`, because only the legacy token can call `PATCH /assessments`.
 
 ## Laptop sync scripts
 
