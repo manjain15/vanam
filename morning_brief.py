@@ -525,12 +525,15 @@ def build_prompt(profile_text, events, emails, today_str, checkin_summary=None, 
             lines.append(f"  Subjects: {', '.join(term_data['subjects'])}")
 
         assessments = term_data.get("assessments") or []
-        if assessments:
+        # Unreleased specs stay out of the brief. The weekly review may
+        # mention them as "spec not out yet"; this note must not ask to start.
+        released = [a for a in assessments if a.get("spec_released") is not False]
+        if released:
             lines.append("  Upcoming assessments (next 21 days):")
-            for a in assessments:
+            for a in released:
                 weight = f" [{a['weight']}%]" if a.get("weight") else ""
                 lines.append(f"    • {a['subject']} — {a['name']}{weight} → due {a['due']} ({a['days_left']}d)")
-        else:
+        elif not assessments:
             lines.append("  No assessment due dates filled in yet (update term_context.json when Moodle releases them).")
 
         # This week's lecture/lab topics from the course outlines (course_schedule).
@@ -836,9 +839,14 @@ def owed_rows(day, today):
 
 
 def due_rows(upcoming, limit=4):
-    """Due soon: the next few assessments, with days left. Within 3 days is red."""
+    """Due soon: the next few released assessments, with days left. Within 3 days is red.
+
+    ``spec_released`` false is omitted. A missing key still shows, so a caller
+    that has not resolved the flag keeps the previous list.
+    """
     rows = []
-    for a in upcoming[:limit]:
+    released = [a for a in upcoming if a.get("spec_released") is not False]
+    for a in released[:limit]:
         due = datetime.date.fromisoformat(a["due"])
         days = a["days_left"]
         when = "today" if days == 0 else "tomorrow" if days == 1 else f"{days}d"

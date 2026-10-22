@@ -40,6 +40,7 @@ SLASH COMMANDS:
   /flags             — show today's term/internship/mentor flags
   /proposals         — list pending profile + term proposals
   /done SUB "Name"   — mark assessment submitted (e.g. /done COMP2511 "Assignment 1")
+  /spec SUB Name     — mark an assessment spec as released (e.g. /spec MATH2931 Assignment 2)
   /internship Co key=val ...   — update internship (status, next_action)
   /mentor "topic" [awaiting]   — log a mentor touchpoint
   /log <free text>             — append a one-line note to episodic memory
@@ -577,6 +578,7 @@ def cmd_help(_args):
         "/approveall [profile|term] — apply all pending proposals\n"
         "/trust — approve/reject history per proposal category\n"
         "/done SUB \"Assessment name\" — mark submitted\n"
+        "/spec SUB Name — mark that assessment's spec as released\n"
         "/outlines — refresh weekly topics from the UNSW course outlines\n"
         "/internship Co key=val ... — update internship\n"
         "/mentor \"topic\" [true|false] — log mentor touchpoint\n"
@@ -779,6 +781,41 @@ def cmd_approveall(args):
             results.append(f"term: failed: {e}")
 
     return "Approve-all results:\n" + "\n".join(f"• {r}" for r in results)
+
+
+def cmd_spec(args):
+    """/spec COURSE name — set spec_released on one assessment.
+
+    Fuzzy-matches the course and the name. Several hits are listed and
+    nothing is written. A second call for the same row confirms it was
+    already released.
+    """
+    if not args:
+        return 'Usage: /spec MATH2931 Assignment 2'
+    try:
+        import term_context
+    except Exception as e:
+        return f"Failed: {e}"
+    try:
+        ctx = term_context.load_context()
+        subject, name = term_context.split_spec_args(ctx, args)
+        if not name:
+            return 'Usage: /spec MATH2931 Assignment 2'
+        result = term_context.set_spec_released(subject, name, released=True)
+    except term_context.TermRecordConflict as e:
+        lines = ["Which assessment?"]
+        for cand in e.candidates:
+            lines.append(f"  /spec {shlex.quote(str(cand['subject']))} {shlex.quote(str(cand['name']))}")
+        return "\n".join(lines)
+    except term_context.TermRecordNotFound:
+        return f'No assessment matches "{" ".join(args)}".'
+    except Exception as e:
+        return f"Failed: {e}"
+    assessment = result["assessment"]
+    label = f"{assessment['subject']} — {assessment['name']}"
+    if result["changed"]:
+        return f"{label}: spec marked released."
+    return f"{label}: spec was already released."
 
 
 def cmd_done(args):
@@ -987,6 +1024,7 @@ COMMANDS = {
     "/approveall": cmd_approveall,
     "/trust":      cmd_trust,
     "/done":       cmd_done,
+    "/spec":       cmd_spec,
     "/outlines":   cmd_outlines,
     "/internship": cmd_internship,
     "/mentor":     cmd_mentor,

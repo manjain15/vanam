@@ -32,7 +32,12 @@ def test_lead_days_bands():
 
 def _due_in(days, weight=15, **extra):
     due = (datetime.date(2026, 7, 1) + datetime.timedelta(days=days)).isoformat()
-    a = {"name": "Assignment", "due": due, "weight": weight, "status": "pending"}
+    # Ramp-up tests are about a spec that is already out. Omit the key in a
+    # caller that wants the old-record inference (assignments stay unreleased).
+    a = {
+        "name": "Assignment", "due": due, "weight": weight,
+        "status": "pending", "spec_released": True,
+    }
     a.update(extra)
     return a
 
@@ -78,6 +83,30 @@ def test_submitted_assessments_ignored(monkeypatch):
 def test_past_due_ignored(monkeypatch):
     _patch_assessments(monkeypatch, [_due_in(-3)])
     assert st.get_assessment_alerts(datetime.date(2026, 7, 1)) == []
+
+
+def test_unreleased_assignment_does_not_alert(monkeypatch):
+    raw = _due_in(3, weight=21, covers_weeks=[1, 2])
+    raw.pop("spec_released")
+    _patch_assessments(monkeypatch, [raw])
+    today = datetime.date(2026, 7, 1)
+    loaded = st._load_assessments(today)
+    assert loaded[0]["spec_released"] is False
+    assert st.get_assessment_alerts(today) == []
+    assert st.get_revision_alerts(today) == []
+
+
+def test_old_exam_record_without_the_field_is_released(monkeypatch):
+    raw = _due_in(10, weight=30, name="Midterm", covers_weeks=[1, 2])
+    raw.pop("spec_released")
+    _patch_assessments(monkeypatch, [raw])
+    today = datetime.date(2026, 7, 1)
+    loaded = st._load_assessments(today)
+    assert loaded[0]["spec_released"] is True
+    assert st.get_assessment_alerts(today)
+    revision = st.get_revision_alerts(today)
+    assert len(revision) == 1
+    assert "Weeks 1-2" in revision[0]
 
 
 # ── Revision triggers ─────────────────────────────────────────────────────────

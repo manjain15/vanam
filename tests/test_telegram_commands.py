@@ -1,6 +1,7 @@
 """Telegram command parsing: iOS smart quotes and /done feedback."""
 
 import datetime
+import json
 import os
 
 os.environ.setdefault("YOUR_EMAIL", "test@example.com")
@@ -69,6 +70,33 @@ def test_smart_quotes_group_like_straight_quotes(monkeypatch):
     reply = jarvis_telegram.handle_command("/done MATH2931 “In-class Test”")
     assert seen == {"subject": "MATH2931", "name": "In-class Test"}
     assert reply == "Marked MATH2931 — In-class Test as submitted."
+
+
+def test_spec_command_sets_the_flag(tmp_path, monkeypatch):
+    path = tmp_path / "term_context.json"
+    path.write_text(json.dumps({"subjects": [{
+        "code": "MATH2931",
+        "assessments": [
+            {"name": "Assignment 2", "due": "2026-11-11", "weight": 20, "status": "pending"},
+            {"name": "Assignment 1", "due": "2026-10-01", "weight": 15, "status": "pending"},
+        ],
+    }]}))
+    monkeypatch.setattr(term_context, "CONTEXT_FILE", path)
+    vague = jarvis_telegram.handle_command("/spec MATH2931 Assignment")
+    assert "Which assessment?" in vague
+    assert "Assignment 1" in vague and "Assignment 2" in vague
+    assert "spec_released" not in path.read_text()
+    reply = jarvis_telegram.handle_command("/spec MATH2931 Assignment 2")
+    assert reply == "MATH2931 — Assignment 2: spec marked released."
+    stored = json.loads(path.read_text())["subjects"][0]["assessments"]
+    assert stored[0]["spec_released"] is True
+    assert "spec_released" not in stored[1]
+    again = jarvis_telegram.handle_command('/spec MATH2931 "Assignment 2"')
+    assert again == "MATH2931 — Assignment 2: spec was already released."
+    assert jarvis_telegram.handle_command("/spec") == "Usage: /spec MATH2931 Assignment 2"
+    from voice import _EMOJI
+    assert not _EMOJI.search(reply)
+    assert "/spec" in jarvis_telegram.cmd_help([])
 
 
 def test_done_reports_a_miss(monkeypatch):

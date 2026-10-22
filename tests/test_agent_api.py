@@ -75,6 +75,7 @@ def test_every_route_requires_bearer():
         ("post", "/internships", {
             "actor": "career", "company": "Atlassian", "role": "SWE", "status": "applied",
         }),
+        ("patch", "/assessments", {"subject": "MATH2931", "name": "Assignment 2"}),
         ("get", "/finance", None),
         ("get", "/finance/spending", None),
         ("get", "/finance/savings", None),
@@ -655,6 +656,9 @@ def test_per_bot_scopes(monkeypatch, tmp_path):
     assert client.get("/health", headers=study).status_code == 200
     assert client.get("/context", headers=study).status_code == 200
     assert client.patch("/mentor", headers=study, json={"notes": "x"}).status_code == 403
+    assert client.patch(
+        "/assessments", headers=study, json={"subject": "MATH2931", "name": "Assignment 2"},
+    ).status_code == 403
     assert client.get("/finance", headers=study).status_code == 403
 
     assert client.get("/health", headers=money).status_code == 200
@@ -1129,3 +1133,86 @@ def test_daily_caps_can_be_overridden_from_the_environment(monkeypatch):
     for bad in ("0", "-3", "many", ""):
         monkeypatch.setenv("JARVIS_API_ASK_DAILY", bad)
         assert agent_api._cap_from_env("JARVIS_API_ASK_DAILY", 30) == 30
+
+
+def _spec_term(tmp_path, monkeypatch):
+    """A term file with two MATH2931 assignments and no spec_released field."""
+    path = tmp_path / "term_context.json"
+    path.write_text(json.dumps({"subjects": [{
+        "code": "MATH2931",
+        "assessments": [
+            {"name": "Assignment 2", "due": "2026-11-11", "weight": 20, "status": "pending"},
+            {"name": "Assignment 1", "due": "2026-10-01", "weight": 15, "status": "pending"},
+        ],
+    }]}))
+    monkeypatch.setattr(term_context, "CONTEXT_FILE", path)
+    monkeypatch.setattr(agent_api, "AUDIT_FILE", tmp_path / "agent_api_audit.jsonl")
+    return path
+
+
+def test_assessment_spec_sets_the_flag_and_audits(tmp_path, monkeypatch):
+    path = _spec_term(tmp_path, monkeypatch)
+    client = _client()
+    ambiguous = client.patch("/assessments", headers=AUTH, json={
+        "subject": "MATH2931", "name": "Assignment",
+    })
+    assert ambiguous.status_code == 409
+    body = ambiguous.get_json()
+    assert body["error"] == "multiple assessments match"
+    assert {row["name"] for row in body["candidates"]} == {"Assignment 1", "Assignment 2"}
+    assert "spec_released" not in path.read_text()
+    assert _audit_lines(tmp_path) == []
+
+    res = client.patch("/assessments", headers=AUTH, json={
+        "subject": "MATH2931",
+        "name": "Assignment 2",
+        "reason": "Spec posted on Moodle",
+        "actor": "study",
+    })
+    assert res.status_code == 200
+    saved = res.get_json()
+    assert saved["changed"] is True
+    assert saved["audit_logged"] is True
+    assert saved["assessment"]["spec_released"] is True
+    assert saved["changes"]["spec_released"] == {"old": None, "new": True}
+    stored = json.loads(path.read_text())["subjects"][0]["assessments"]
+    assert stored[0]["spec_released"] is True
+    assert "spec_released" not in stored[1]
+    audit = _audit_lines(tmp_path)
+    assert audit[-1]["action"] == "assessment_spec"
+    assert audit[-1]["actor"] == "owner"
+    assert audit[-1]["target"] == {"subject": "MATH2931", "name": "Assignment 2"}
+    assert audit[-1]["reason"] == "Spec posted on Moodle"
+    assert audit[-1]["old"] == {"spec_released": None}
+    assert audit[-1]["new"] == {"spec_released": True}
+
+    again = client.patch("/assessments", headers=AUTH, json={
+        "subject": "MATH2931", "name": "Assignment 2",
+    })
+    assert again.status_code == 200
+    assert again.get_json()["changed"] is False
+    assert again.get_json()["audit_logged"] is False
+    assert len(_audit_lines(tmp_path)) == 1
+
+    missing = client.patch("/assessments", headers=AUTH, json={"subject": "MATH2931", "name": "Quiz 9"})
+    assert missing.status_code == 404
+    bad = client.patch("/assessments", headers=AUTH, json={
+        "subject": "MATH2931", "name": "Assignment 2", "spec_released": "true",
+    })
+    assert bad.status_code == 400
+
+
+def test_assessment_spec_audit_failure_leaves_the_file(tmp_path, monkeypatch):
+    path = _spec_term(tmp_path, monkeypatch)
+    before = path.read_text()
+
+    def fail(_entry):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(agent_api, "append_external_audit", fail)
+    res = _client().patch("/assessments", headers=AUTH, json={
+        "subject": "MATH2931", "name": "Assignment 2",
+    })
+    assert res.status_code == 500
+    assert path.read_text() == before
+    assert _audit_lines(tmp_path) == []

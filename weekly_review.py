@@ -275,7 +275,12 @@ def collect_term_context():
         lines.append("  Upcoming assessments (next 21 days):")
         for a in assessments:
             weight = f" [{a['weight']}%]" if a.get("weight") else ""
-            lines.append(f"    • {a['subject']} — {a['name']}{weight} → due {a['due']} ({a['days_left']}d)")
+            if a.get("spec_released") is False:
+                lines.append(
+                    f"    • {a['subject']} — {a['name']}{weight} → spec not out yet (due {a['due']})"
+                )
+            else:
+                lines.append(f"    • {a['subject']} — {a['name']}{weight} → due {a['due']} ({a['days_left']}d)")
     else:
         lines.append("  No assessment due dates filled in term_context.json yet.")
 

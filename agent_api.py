@@ -32,10 +32,11 @@ Do not open the port on the public firewall. See docs/API.md.
 COST:
   POST /ask is one Claude call, the same order of cost as a Telegram message.
   GET /memory/search hits Mem0 (OpenAI embeddings). Do not poll either.
-  Mentor, internship, and spend writes do not call Anthropic. Mentor and
-  internship updates go through term_context.mutate_context, which refuses
-  to replace a term_context.json that exists but will not parse. Spend
-  calls live_spend.log_spend. All three append data/agent_api_audit.jsonl.
+  Mentor, internship, assessment-spec, and spend writes do not call
+  Anthropic. Mentor, internship, and spec updates go through
+  term_context.mutate_context, which refuses to replace a term_context.json
+  that exists but will not parse. Spend calls live_spend.log_spend. All of
+  them append data/agent_api_audit.jsonl. PATCH /assessments is owner-only.
   GET /finance* is read-only. It reads local CSVs and term_context goals.
   Reselling inventory also reads the Google Sheet once per call. No Anthropic.
   A weekly Money check should call GET /finance, not poll it.
@@ -78,14 +79,15 @@ _ACTOR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$")
 _MENTOR_BODY_KEYS = {"actor", "reason", *term_context.MENTOR_WRITABLE_FIELDS}
 _INTERNSHIP_PATCH_KEYS = {"actor", "reason", "company", "role", *term_context.INTERNSHIP_WRITABLE_FIELDS}
 _INTERNSHIP_ADD_KEYS = {"actor", "reason", "company", "role", "status", "last_update", "next_action", "notes"}
+_ASSESSMENT_SPEC_KEYS = {"actor", "reason", "subject", "name", "spec_released"}
 
 TIMEZONE     = pytz.timezone(config.TIMEZONE)
 DEFAULT_PORT = 5557
 
 # Per-bot route allowlist. A prefix matches that path and anything under it
-# (/finance covers /finance/spending). /ask, /memory/search, and /brief are
-# not listed: only the legacy JARVIS_API_TOKEN (actor "owner") can call them,
-# unless you add the path to a bot here.
+# (/finance covers /finance/spending). /ask, /memory/search, /brief, and
+# PATCH /assessments are not listed: only the legacy JARVIS_API_TOKEN
+# (actor "owner") can call them, unless you add the path to a bot here.
 BOT_ROUTE_ALLOWLIST = {
     "career": ("/health", "/flags", "/context", "/mentor", "/internships", "/today", "/areas"),
     "study": ("/health", "/flags", "/context", "/today"),
@@ -1097,6 +1099,49 @@ def apply_internship_add(body):
     }
 
 
+def apply_assessment_spec(body):
+    """Set spec_released on one assessment. Owner token only.
+
+    subject and name match the same way as Telegram /spec. Ambiguous
+    matches raise TermRecordConflict and do not write. A stored boolean
+    that already equals the request is not audited. spec_released defaults
+    to true when omitted.
+    """
+    _json_object(body)
+    _reject_unknown_fields(body, _ASSESSMENT_SPEC_KEYS)
+    _reject_nulls(body)
+    actor = _request_actor()
+    reason = _reason(body)
+    if "subject" not in body or "name" not in body:
+        raise ValueError("subject and name are required")
+    released = True
+    if "spec_released" in body:
+        if not isinstance(body["spec_released"], bool):
+            raise ValueError("spec_released must be a boolean")
+        released = body["spec_released"]
+
+    def _audit(old, new, record):
+        append_external_audit(_audit_entry(
+            actor,
+            "assessment_spec",
+            {"subject": record.get("subject"), "name": record.get("name")},
+            reason,
+            old,
+            new,
+        ))
+
+    result = term_context.set_spec_released(
+        body["subject"], body["name"], released=released, audit_fn=_audit,
+    )
+    return {
+        "ok": True,
+        "changed": result["changed"],
+        "audit_logged": result["changed"],
+        "changes": result["changes"],
+        "assessment": result["assessment"],
+    }
+
+
 def _is_calendar_date(token):
     """True when token is a real ISO or day-month-year date."""
     for fmt in ("%Y-%m-%d", "%d-%m-%Y"):
@@ -1648,7 +1693,10 @@ def create_app(token=None, bot_tokens=None):
         except term_context.TermRecordNotFound as e:
             return jsonify({"error": str(e)}), 404
         except term_context.TermRecordConflict as e:
-            return jsonify({"error": str(e)}), 409
+            body = {"error": str(e)}
+            if getattr(e, "candidates", None):
+                body["candidates"] = e.candidates
+            return jsonify(body), 409
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
         except Exception as e:
@@ -1755,6 +1803,11 @@ def create_app(token=None, bot_tokens=None):
     def add_internship():
         """Add one internship application."""
         return _commit(apply_internship_add, "internship add", success_status=201)
+
+    @app.patch("/assessments")
+    def patch_assessment_spec():
+        """Mark one assessment's spec as released. Owner token only."""
+        return _commit(apply_assessment_spec, "assessment spec")
 
     def _finance_dates():
         return spending_window(request.args.get("start"), request.args.get("end"))
