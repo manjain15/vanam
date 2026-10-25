@@ -1284,8 +1284,9 @@ def get_spending_payload(start, end):
     Everyday-account spend for an inclusive range, versus the weekly budget.
 
     Category totals use finance_tracker.summarise_spending. Live Back Tap
-    totals are included when the window reaches today. No raw descriptions
-    leave this function without account-number redaction.
+    totals are included when the window reaches today. excluded_transfers
+    lists pass-through withdrawals omitted from the total. No raw
+    descriptions leave this function without account-number redaction.
     """
     import finance_tracker
 
@@ -1333,11 +1334,12 @@ def get_savings_payload():
     Funds counted toward exchange_target (term_context us_exchange goals).
 
     balance, remaining, pct, on_track, and projected_date use breakdown.total:
-    the savings account, his Revolut share, the everyday balance when that
-    CSV exists, and reselling capital already paid. breakdown names each
-    component, the cash subtotal, and the total. The goal figures are still
-    returned when nothing could be read. Account numbers are not part of
-    this payload.
+    the savings account, his Revolut share, the everyday available balance
+    when that export states one (otherwise the posted ledger balance), and
+    reselling capital already paid. breakdown names each component, the
+    cash subtotal, and the total. everyday_source says which everyday
+    figure was used. The goal figures are still returned when nothing
+    could be read. Account numbers are not part of this payload.
     """
     import finance_tracker
 

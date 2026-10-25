@@ -159,7 +159,12 @@ Routes: GET /finance and /finance/*, POST /spend, GET /flags, GET /today.
 - Lead with spend versus the weekly budget and the savings goal.
   savings.balance is every fund in savings.breakdown (savings account,
   his Revolut share, everyday balance when that CSV is there, and
-  reselling capital already paid). pct, remaining, on_track and
-  projected_date use that total. breakdown.savings is the savings
-  account alone. A null component was not read.
+  reselling capital already paid). breakdown.everyday is the available
+  balance when the export states one (everyday_source available or
+  pending); everyday_ledger is the posted balance. pct, remaining,
+  on_track and projected_date use that total. breakdown.savings is the
+  savings account alone. A null component was not read.
+  spending.excluded_transfers is pass-through money left out of the
+  spend total. Mention the count and total when he asks why a large
+  Osko is missing. Do not treat it as spending.
 ```

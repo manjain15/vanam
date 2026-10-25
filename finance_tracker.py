@@ -17,6 +17,14 @@ CSV FORMAT (St. George):
   Date,Description,Debit,Credit,Balance
   13/05/2026,Visa Purchase ...,48.50,,657.47,
 
+  Everyday's goal balance prefers an available figure when the export has
+  one. Column names: Available, Available Balance, Avail, Avail Balance,
+  Avail Bal. An account line before the header works too
+  (Available Balance,5800.00). Pending rows (Status Pending, or a
+  description starting with PENDING) are left out of spending. If there is
+  no available figure, pending debits that have not posted are subtracted
+  from the ledger balance. Savings and investing keep the ledger balance.
+
 CATEGORIES:
   Food & dining  — supermarkets, restaurants, cafes, delivery
   Entertainment  — streaming, tickets, games, bars, nightlife
@@ -31,6 +39,7 @@ UPDATE WEEKLY:
 
 import csv
 import datetime
+import itertools
 import json
 import os
 import re
@@ -66,7 +75,12 @@ TIMEZONE = pytz.timezone(config.TIMEZONE)
 # Goals themselves live in term_context.json (single source of truth, editable
 # via proposals) instead of being hardcoded here.
 try:
-    from term_context import get_finance_goals, get_own_account_rules, get_refund_window_days
+    from term_context import (
+        get_finance_goals,
+        get_own_account_rules,
+        get_passthrough_settings,
+        get_refund_window_days,
+    )
 except Exception:
     def get_finance_goals():
         return {
@@ -88,6 +102,10 @@ except Exception:
     def get_refund_window_days():
         """Fallback when term_context cannot be imported."""
         return 14
+
+    def get_passthrough_settings():
+        """Fallback when term_context cannot be imported."""
+        return {"window_days": 7, "tolerance": 0.0, "max_group": 4}
 
 
 # ── Category rules ────────────────────────────────────────────────────────────
@@ -272,49 +290,202 @@ def categorise(description):
 
 
 # ── CSV parsing ───────────────────────────────────────────────────────────────
+# St George internet banking's usual download is
+# Date,Description,Debit,Credit,Balance. Nothing in the repo shows an
+# available-balance column, so the names below are the ones the parser
+# accepts. Absent means the ledger balance, which is the old behaviour.
+
+_HEADER_ALIASES = {
+    "transaction date": "date",
+    "processed date": "date",
+    "value date": "date",
+    "narrative": "description",
+    "transaction description": "description",
+    "details": "description",
+    "debit amount": "debit",
+    "credit amount": "credit",
+    "current balance": "balance",
+    "ledger balance": "balance",
+    "ledger": "balance",
+    "available balance": "available",
+    "available funds": "available",
+    "avail": "available",
+    "avail balance": "available",
+    "avail bal": "available",
+    "available bal": "available",
+    "transaction status": "status",
+    "txn status": "status",
+}
+_PENDING_STATUSES = {
+    "pending", "held", "authorised", "authorized", "pre-auth", "preauth",
+    "pending transaction",
+}
+
+
+def _canonical_header(name):
+    """Lowercase header or label, with known St George aliases collapsed."""
+    key = re.sub(r"\s+", " ", (name or "").strip().lower()).rstrip(":")
+    return _HEADER_ALIASES.get(key, key)
+
+
+def _parse_money(raw):
+    """Dollars from a bank cell, or None when the cell is blank.
+
+    Strips a trailing comma, dollar signs, and thousands separators.
+    Parentheses mark a negative amount.
+    """
+    text = (raw or "").strip().rstrip(",")
+    if not text:
+        return None
+    text = text.replace("$", "").replace(",", "").replace(" ", "")
+    negative = False
+    if text.startswith("(") and text.endswith(")"):
+        negative = True
+        text = text[1:-1]
+    if text[:1] in "+":
+        text = text[1:]
+    try:
+        value = float(text)
+    except ValueError:
+        return None
+    if negative:
+        value = -value
+    return value
+
+
+def _stated_available(cells):
+    """Dollar amount when the cells are an account-level available balance."""
+    cells = [str(cell).strip() for cell in cells if str(cell or "").strip()]
+    if len(cells) == 1 and ":" in cells[0]:
+        label, _, value = cells[0].partition(":")
+        cells = [label.strip(), value.strip()]
+    if len(cells) < 2:
+        return None
+    if _canonical_header(cells[0]) != "available":
+        return None
+    return _parse_money(cells[1])
+
+
+def _row_is_pending(data, description):
+    """True for a transaction the export still marks as pending."""
+    status = _normalise_desc(data.get("status") or "")
+    if status in _PENDING_STATUSES:
+        return True
+    flag = _normalise_desc(data.get("pending") or "")
+    if flag in {"y", "yes", "true", "1", "pending"}:
+        return True
+    return _normalise_desc(description).startswith("pending")
+
+
+def _interpret_stgeorge_row(data, seq):
+    """One transaction dict, ('stated', amount), or None when the row is blank."""
+    date_str = (data.get("date") or "").strip()
+    description = re.sub(r"\s+", " ", (data.get("description") or "").strip())
+    if not date_str:
+        if _canonical_header(description) == "available":
+            for key in ("available", "balance", "credit", "debit"):
+                amount = _parse_money(data.get(key) or "")
+                if amount is not None:
+                    return ("stated", amount)
+        return None
+    try:
+        date = datetime.datetime.strptime(date_str, "%d/%m/%Y").date()
+    except ValueError:
+        stated = _stated_available([
+            date_str, data.get("description") or data.get("balance") or "",
+        ])
+        if stated is None:
+            return None
+        return ("stated", stated)
+
+    debit = _parse_money(data.get("debit") or "")
+    credit = _parse_money(data.get("credit") or "")
+    balance = _parse_money(data.get("balance") or "")
+    available = _parse_money(data.get("available") or "")
+    return {
+        "date": date,
+        "description": description,
+        "debit": 0.0 if debit is None else debit,
+        "credit": 0.0 if credit is None else credit,
+        "balance": balance,
+        "available": available,
+        "pending": _row_is_pending(data, description),
+        "category": categorise(description),
+        "_seq": seq,
+    }
+
+
+def read_stgeorge_export(filepath):
+    """
+    Read a St. George CSV into transactions and an optional available balance.
+
+    Returns {"transactions", "stated_available"}. transactions are newest
+    first, same as parse_stgeorge_csv. stated_available is the account-level
+    figure from a line before the header (or a non-transaction row such as
+    "Available Balance"), or None when the export does not state one.
+    A missing file is an empty export. The classic five-column file leaves
+    stated_available None and each row's available None.
+    """
+    if filepath is None or not Path(filepath).exists():
+        return {"transactions": [], "stated_available": None}
+
+    stated_available = None
+    header = None
+    header_index = None
+    with open(filepath, newline="", encoding="utf-8-sig") as handle:
+        rows = list(csv.reader(handle))
+
+    for index, row in enumerate(rows):
+        canonical = [_canonical_header(cell) for cell in row]
+        if "date" in canonical and "description" in canonical:
+            header = canonical
+            header_index = index
+            break
+        stated = _stated_available(row)
+        if stated is not None:
+            stated_available = stated
+    if header is None:
+        return {"transactions": [], "stated_available": stated_available}
+
+    transactions = []
+    for seq, row in enumerate(rows[header_index + 1:]):
+        if not any(str(cell).strip() for cell in row):
+            continue
+        padded = list(row) + [""] * max(0, len(header) - len(row))
+        data = {}
+        for key, value in zip(header, padded):
+            if not key:
+                continue
+            data[key] = value.strip() if isinstance(value, str) else value
+        try:
+            parsed = _interpret_stgeorge_row(data, seq)
+        except (ValueError, KeyError):
+            continue
+        if parsed is None:
+            continue
+        if isinstance(parsed, tuple) and parsed[0] == "stated":
+            stated_available = parsed[1]
+            continue
+        transactions.append(parsed)
+
+    transactions.sort(key=lambda txn: (txn["date"], -txn["_seq"]), reverse=True)
+    for txn in transactions:
+        del txn["_seq"]
+    return {"transactions": transactions, "stated_available": stated_available}
+
 
 def parse_stgeorge_csv(filepath):
     """
     Parses a St. George CSV export.
-    Returns a list of transaction dicts:
-      {date, description, debit, credit, balance}
+    Returns a list of transaction dicts, newest first:
+      {date, description, debit, credit, balance, available, pending, category}
+
+    available is the row's available-balance cell, or None when that column
+    is absent. balance is None when the Balance cell is blank. pending is
+    True when the row has not posted. Callers that only need the ledger
+    balance can keep reading balance on posted rows.
     """
-    transactions = []
-    if not filepath.exists():
-        return transactions
-
-    with open(filepath, newline="", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            try:
-                # Parse date: DD/MM/YYYY
-                date_str = row.get("Date", "").strip()
-                if not date_str:
-                    continue
-                date = datetime.datetime.strptime(date_str, "%d/%m/%Y").date()
-
-                description = row.get("Description", "").strip()
-                # Clean up extra whitespace in description
-                description = re.sub(r'\s+', ' ', description)
-
-                debit  = float(row.get("Debit",  "") or 0)
-                credit = float(row.get("Credit", "") or 0)
-                # Balance column sometimes has trailing comma — strip it
-                balance_str = row.get("Balance", "").strip().rstrip(",")
-                balance = float(balance_str) if balance_str else 0.0
-
-                transactions.append({
-                    "date":        date,
-                    "description": description,
-                    "debit":       debit,
-                    "credit":      credit,
-                    "balance":     balance,
-                    "category":    categorise(description),
-                })
-            except (ValueError, KeyError):
-                continue
-
-    return sorted(transactions, key=lambda t: t["date"], reverse=True)
+    return read_stgeorge_export(filepath)["transactions"]
 
 
 def parse_revolut_csv(filepath):
@@ -362,6 +533,7 @@ def parse_revolut_csv(filepath):
                     "category":    "Reselling",
                     "internal":    internal,
                     "refund":      kind == "card refund",
+                    "rail":        kind,
                     "_key":        (completed, idx),
                 })
             except (ValueError, KeyError):
@@ -373,13 +545,25 @@ def parse_revolut_csv(filepath):
     return transactions
 
 
+def _posted_ledger(transactions):
+    """Newest posted ledger balance, skipping pending rows and blank cells."""
+    for txn in transactions:
+        if txn.get("pending"):
+            continue
+        if txn.get("balance") is not None:
+            return txn["balance"]
+    return None
+
+
 def get_latest_balance(filepath):
-    """Returns the most recent balance from a CSV file."""
-    transactions = parse_stgeorge_csv(filepath)
-    if not transactions:
-        return None
-    # Most recent entry = first after sort by date descending
-    return transactions[0]["balance"]
+    """Returns the most recent posted ledger balance from a CSV file.
+
+    Pending rows are skipped so a hold dated today cannot replace the
+    posted balance. A blank Balance cell is skipped too. Savings and
+    investing use this. The everyday goal figure is
+    resolve_everyday_balances, which can be lower.
+    """
+    return _posted_ledger(parse_stgeorge_csv(filepath))
 
 
 # ── Refunds ───────────────────────────────────────────────────────────────────
@@ -529,9 +713,14 @@ def _refund_offsets(debits, credits, window_days):
 
     Credits are applied oldest first. Each debit and each credit is used
     once. See the refund rules at the top of this section.
+
+    Returns (offsets, used_credit_ids). used_credit_ids are the id() of
+    credit dicts that were applied, so a pass-through match cannot reuse
+    the same credit.
     """
     offsets = {}
     used = set()
+    used_credits = set()
     eligible = [
         credit for credit in credits
         if credit.get("credit", 0) > 0
@@ -566,24 +755,247 @@ def _refund_offsets(debits, credits, window_days):
             continue
         index = best[1]
         used.add(index)
+        used_credits.add(id(credit))
         offsets[index] = credit_cents / 100.0
-    return offsets
+    return offsets, used_credits
 
 
-def _net_spending_debits(transactions, start, end):
-    """Counted debits in the inclusive range, after refund credits.
+# Outflows that can be a pass-through. Card purchases are real spending even
+# when a deposit of the same amount arrived. A categorised Osko (a ticket,
+# a shop) is real spending too. Only an uncategorised bank withdrawal can
+# drop out, and only when incoming transfers cover it.
+_PASSTHROUGH_OUT_MARKERS = ("osko withdrawal", "sct withdrawal")
+_PASSTHROUGH_IN_MARKERS = ("osko deposit", "sct deposit")
+# Salary and tutoring must not cancel a withdrawal of the same size.
+_PASSTHROUGH_INCOME = ("Automation", "Tutoring", "Refund")
 
-    Own-account transfers are dropped first. A fully refunded debit is
-    omitted. A partial refund keeps the category and the remaining amount.
-    The original transaction dicts are not mutated.
+
+def _is_passthrough_outflow(txn):
+    """True for an uncategorised Osko or Sct withdrawal that is not his own."""
+    if txn.get("pending") or (txn.get("debit") or 0) <= 0:
+        return False
+    description = txn.get("description") or ""
+    if _is_internal_spend(description):
+        return False
+    category = txn.get("category") or categorise(description)
+    if category != "Other":
+        return False
+    desc = _normalise_desc(description)
+    return any(marker in desc for marker in _PASSTHROUGH_OUT_MARKERS)
+
+
+def _is_external_transfer_in(txn, refunded_ids):
+    """True for money arriving from outside his own accounts.
+
+    A credit already used to refund a purchase is not reused. Own-account
+    deposits, Revolut top-ups, and salary, tutoring, or refund credits are
+    not evidence that a later withdrawal was someone else's money.
+    Revolut rows count only when they are an external transfer (rail
+    'transfer'); card payments do not. On the everyday account only Osko
+    and Sct deposits count. Internet deposits are own-account credits.
+    Direct credits are left out so salary does not cancel a withdrawal.
+    """
+    if id(txn) in refunded_ids or txn.get("pending"):
+        return False
+    if txn.get("internal") or txn.get("refund"):
+        return False
+    if (txn.get("credit") or 0) <= 0:
+        return False
+    description = txn.get("description") or ""
+    if _is_internal_credit(description):
+        return False
+    if categorise_income(description) in _PASSTHROUGH_INCOME:
+        return False
+    rail = txn.get("rail")
+    if rail is not None:
+        return rail == "transfer"
+    desc = _normalise_desc(description)
+    return any(marker in desc for marker in _PASSTHROUGH_IN_MARKERS)
+
+
+def revolut_passthrough_inflows():
+    """External Revolut transfers in. Missing or unreadable file is [].
+
+    Top-ups and transfers with the owner in the description stay internal
+    and are not returned. Card payments are not returned either, so a shop
+    on Revolut cannot cancel an Osko of the same amount.
+    """
+    path = REVOLUT_CSV
+    if path is None or not Path(path).exists():
+        return []
+    try:
+        rows = parse_revolut_csv(path)
+    except Exception as exc:
+        print(f"⚠️  pass-through: revolut inflows unavailable: {exc}")
+        return []
+    return [row for row in rows if _is_external_transfer_in(row, ())]
+
+
+def _external_transfer_inflows(transactions, refunded_ids):
+    """Everyday credits that can justify a pass-through withdrawal."""
+    return [
+        txn for txn in transactions
+        if _is_external_transfer_in(txn, refunded_ids)
+    ]
+
+
+def _within_passthrough_window(inflow, outflow, window_days):
+    """True when the inflow is on the outflow date or up to window_days before."""
+    gap = (outflow["date"] - inflow["date"]).days
+    return 0 <= gap <= window_days
+
+
+def _first_sum_subset(pairs, target_cents, tolerance_cents, max_group):
+    """Ids of 2..max_group pairs whose cents sum to target, or None.
+
+    pairs are (id, cents, gap). The smallest group wins. Within that size
+    the first combination after sorting by gap wins, which is the closest
+    money. At most 18 pairs are considered.
+    """
+    ordered = sorted(pairs, key=lambda item: (item[2], item[0]))[:18]
+    upper = min(max_group, len(ordered))
+    for size in range(2, upper + 1):
+        for combo in itertools.combinations(ordered, size):
+            total = sum(cents for _item_id, cents, _gap in combo)
+            if abs(total - target_cents) <= tolerance_cents:
+                return [item_id for item_id, _cents, _gap in combo]
+    return None
+
+
+def _match_passthrough_debits(debits, inflows, settings):
+    """Indexes of withdrawals covered by incoming transfers.
+
+    One matching amount is paired first. Leftover withdrawals can match a
+    sum of inflows, and one inflow can match a sum of withdrawals. Each
+    side is used once. Inflows have to land on or before the withdrawal,
+    inside settings['window_days']. The matched total may differ by
+    settings['tolerance'] dollars.
+    """
+    window = settings["window_days"]
+    tolerance_cents = int(round(float(settings["tolerance"]) * 100))
+    max_group = settings["max_group"]
+    candidates = [
+        index for index, txn in enumerate(debits) if _is_passthrough_outflow(txn)
+    ]
+    pool = [
+        (index, txn) for index, txn in enumerate(inflows)
+        if (txn.get("credit") or 0) > 0
+    ]
+    used_in = set()
+    used_out = set()
+
+    def _gap(inflow, outflow):
+        return (outflow["date"] - inflow["date"]).days
+
+    for index in sorted(candidates, key=lambda i: (debits[i]["date"], i)):
+        outflow = debits[index]
+        target = _cents(outflow["debit"])
+        best = None
+        for in_index, inflow in pool:
+            if in_index in used_in:
+                continue
+            if not _within_passthrough_window(inflow, outflow, window):
+                continue
+            if abs(_cents(inflow["credit"]) - target) > tolerance_cents:
+                continue
+            rank = (_gap(inflow, outflow), in_index)
+            if best is None or rank < best[0]:
+                best = (rank, in_index)
+        if best is None:
+            continue
+        used_in.add(best[1])
+        used_out.add(index)
+
+    for index in sorted(candidates, key=lambda i: (debits[i]["date"], i)):
+        if index in used_out:
+            continue
+        outflow = debits[index]
+        pairs = []
+        for in_index, inflow in pool:
+            if in_index in used_in:
+                continue
+            if not _within_passthrough_window(inflow, outflow, window):
+                continue
+            pairs.append((in_index, _cents(inflow["credit"]), _gap(inflow, outflow)))
+        chosen = _first_sum_subset(
+            pairs, _cents(outflow["debit"]), tolerance_cents, max_group,
+        )
+        if not chosen:
+            continue
+        used_out.add(index)
+        used_in.update(chosen)
+
+    remaining_in = [
+        (in_index, inflow) for in_index, inflow in pool if in_index not in used_in
+    ]
+    remaining_in.sort(key=lambda item: _cents(item[1]["credit"]), reverse=True)
+    for in_index, inflow in remaining_in:
+        pairs = []
+        for index in candidates:
+            if index in used_out:
+                continue
+            outflow = debits[index]
+            if not _within_passthrough_window(inflow, outflow, window):
+                continue
+            pairs.append((index, _cents(outflow["debit"]), _gap(inflow, outflow)))
+        chosen = _first_sum_subset(
+            pairs, _cents(inflow["credit"]), tolerance_cents, max_group,
+        )
+        if not chosen:
+            continue
+        used_in.add(in_index)
+        used_out.update(chosen)
+    return used_out
+
+
+def _excluded_transfer_summary(debits, indexes):
+    """Count and total of pass-through withdrawals, plus a short audit list."""
+    ordered = sorted(
+        indexes,
+        key=lambda index: (
+            debits[index]["date"],
+            debits[index].get("description") or "",
+            index,
+        ),
+    )
+    items = []
+    for index in ordered:
+        txn = debits[index]
+        items.append({
+            "date": txn["date"].isoformat(),
+            "amount": round(txn["debit"], 2),
+            "description": txn.get("description") or "",
+        })
+    return {
+        "count": len(items),
+        "total": round(sum(item["amount"] for item in items), 2),
+        "items": items,
+    }
+
+
+def _net_spending_debits(transactions, start, end, extra_inflows=None):
+    """Counted debits in the inclusive range, after refunds and pass-throughs.
+
+    Own-account transfers and pending rows are dropped first. A fully
+    refunded debit is omitted. A partial refund keeps the category and the
+    remaining amount. An Osko or Sct withdrawal is omitted when incoming
+    transfers (on this account or in extra_inflows) cover the same amount
+    inside the pass-through window. The original transaction dicts are not
+    mutated.
+
+    Returns (debits, excluded_transfers). excluded_transfers has count,
+    total, and items for the withdrawals that were removed.
     """
     debits = [
         txn for txn in transactions
         if start <= txn["date"] <= end
         and txn.get("debit", 0) > 0
+        and not txn.get("pending")
         and not _is_internal_spend(txn.get("description", ""))
     ]
-    offsets = _refund_offsets(debits, transactions, get_refund_window_days())
+    offsets, refunded_ids = _refund_offsets(
+        debits, transactions, get_refund_window_days(),
+    )
     netted = []
     for index, txn in enumerate(debits):
         refunded = offsets.get(index, 0.0)
@@ -597,12 +1009,23 @@ def _net_spending_debits(transactions, start, end):
             netted.append(row)
         else:
             netted.append(txn)
-    return netted
+    inflows = _external_transfer_inflows(transactions, refunded_ids)
+    if extra_inflows:
+        inflows.extend(
+            inflow for inflow in extra_inflows
+            if _is_external_transfer_in(inflow, refunded_ids)
+        )
+    excluded_indexes = _match_passthrough_debits(
+        netted, inflows, get_passthrough_settings(),
+    )
+    excluded = _excluded_transfer_summary(netted, excluded_indexes)
+    kept = [row for index, row in enumerate(netted) if index not in excluded_indexes]
+    return kept, excluded
 
 
 # ── Spending analysis ─────────────────────────────────────────────────────────
 
-def analyse_spending(transactions, days=7):
+def analyse_spending(transactions, days=7, extra_inflows=None):
     """
     Analyses spending from the everyday account over the last N days.
     Returns a dict with category totals, big transactions, and overall total.
@@ -610,12 +1033,18 @@ def analyse_spending(transactions, days=7):
     Own-account transfers (see _is_internal_spend) are left out of the totals,
     the category breakdown, and the flagged debits. Refund credits that match
     a counted debit (see the refund rules above) reduce that debit's category
-    and the total. That is the same filter summarise_spending uses for GET /finance.
+    and the total. Pass-through withdrawals are left out too and listed on
+    excluded_transfers. That is the same filter summarise_spending uses for
+    GET /finance. extra_inflows defaults to external Revolut transfers.
     """
     today    = datetime.datetime.now(TIMEZONE).date()
     cutoff   = today - datetime.timedelta(days=days)
+    if extra_inflows is None:
+        extra_inflows = revolut_passthrough_inflows()
 
-    recent = _net_spending_debits(transactions, cutoff, datetime.date.max)
+    recent, excluded = _net_spending_debits(
+        transactions, cutoff, datetime.date.max, extra_inflows,
+    )
 
     # Category totals
     category_totals = {}
@@ -635,6 +1064,7 @@ def analyse_spending(transactions, days=7):
         "transaction_count": len(recent),
         "transactions":     recent,
         "days":             days,
+        "excluded_transfers": excluded,
     }
 
 
@@ -671,8 +1101,113 @@ def revolut_friend_share():
     return _money(value)
 
 
+_PENDING_NOISE = {
+    "pending", "visa", "eftpos", "purchase", "osko", "withdrawal", "deposit",
+    "debit", "credit", "card", "payment", "transaction",
+}
+
+
+def _pending_tokens(description):
+    """Merchant tokens left after the pending marker and the bank rail."""
+    desc = _normalise_desc(description)
+    desc = re.sub(r"^pending\b", " ", desc)
+    desc = re.sub(r"[^a-z0-9]+", " ", desc)
+    return {
+        token for token in desc.split()
+        if len(token) >= 4 and token not in _PENDING_NOISE
+    }
+
+
+def _pending_matches_posted(pending, posted):
+    """True when this pending debit is the same purchase already posted.
+
+    Same amount, posted on the pending date or within 10 days after, and a
+    shared merchant token. A pending line with no merchant token matches a
+    same-day posted debit of the same amount only.
+    """
+    if _cents(pending.get("debit") or 0) != _cents(posted.get("debit") or 0):
+        return False
+    if _cents(pending.get("debit") or 0) <= 0:
+        return False
+    gap = (posted["date"] - pending["date"]).days
+    if gap < 0 or gap > 10:
+        return False
+    pending_tokens = _pending_tokens(pending.get("description") or "")
+    posted_tokens = _pending_tokens(posted.get("description") or "")
+    if pending_tokens and posted_tokens and (pending_tokens & posted_tokens):
+        return True
+    return gap == 0 and not pending_tokens
+
+
+def _unmatched_pending_debits(transactions):
+    """Pending debits that are not already present as a posted debit."""
+    posted = [
+        txn for txn in transactions
+        if not txn.get("pending") and (txn.get("debit") or 0) > 0
+    ]
+    used = set()
+    unmatched = []
+    for pending in transactions:
+        if not pending.get("pending") or (pending.get("debit") or 0) <= 0:
+            continue
+        match_index = None
+        for index, txn in enumerate(posted):
+            if index in used:
+                continue
+            if _pending_matches_posted(pending, txn):
+                match_index = index
+                break
+        if match_index is None:
+            unmatched.append(pending)
+        else:
+            used.add(match_index)
+    return unmatched
+
+
+def resolve_everyday_balances(transactions, stated_available=None):
+    """
+    Ledger and available balances for the everyday account.
+
+    Prefer stated_available (an account line in the export), then the
+    available cell on the newest row that has one. Otherwise subtract
+    pending debits that have not yet posted from the newest posted ledger
+    balance. Pending credits are not added: a pending refund does not
+    change available funds until it finalises. With neither signal the
+    posted ledger balance is used, which is the previous behaviour.
+
+    Returns {ledger, available, source}. source is "available", "pending",
+    "ledger", or "none".
+    """
+    ledger = _posted_ledger(transactions)
+    # Newest row only. An older row's available cell is a past figure.
+    newest = transactions[0] if transactions else None
+    row_available = None if newest is None else newest.get("available")
+    explicit = stated_available if stated_available is not None else row_available
+    if explicit is not None:
+        return {
+            "ledger": None if ledger is None else _money(ledger),
+            "available": _money(explicit),
+            "source": "available",
+        }
+    pending_debit = sum((txn.get("debit") or 0) for txn in _unmatched_pending_debits(transactions))
+    if ledger is not None and pending_debit > 0:
+        return {
+            "ledger": _money(ledger),
+            "available": _money(ledger - pending_debit),
+            "source": "pending",
+        }
+    if ledger is None:
+        return {"ledger": None, "available": None, "source": "none"}
+    return {
+        "ledger": _money(ledger),
+        "available": _money(ledger),
+        "source": "ledger",
+    }
+
+
 def build_savings_breakdown(savings_balance, revolut_balance, revolut_source,
-                            everyday_balance, capital, friend_share):
+                            everyday_balance, capital, friend_share,
+                            everyday_ledger=None, everyday_source=None):
     """
     Add up every fund that counts toward the savings goal.
 
@@ -683,12 +1218,22 @@ def build_savings_breakdown(savings_balance, revolut_balance, revolut_source,
     Revolut share is never negative: a share larger than the balance counts
     as zero of his own. A missing source is left out of the cash subtotal
     and the total, rather than treated as a zero balance.
+
+    everyday_balance is the available balance when the everyday export
+    states one, otherwise the ledger balance. everyday_ledger is the posted
+    balance and everyday_source says which figure everyday_balance is.
     """
     friend_share = _money(max(float(friend_share or 0), 0))
     source = revolut_source or "none"
     savings = None if savings_balance is None else _money(savings_balance)
     revolut = None if revolut_balance is None else _money(revolut_balance)
     everyday = None if everyday_balance is None else _money(everyday_balance)
+    if everyday_source is None:
+        everyday_source = "none" if everyday is None else "ledger"
+    if everyday_ledger is None and everyday_source == "ledger":
+        everyday_ledger = everyday
+    elif everyday_ledger is not None:
+        everyday_ledger = _money(everyday_ledger)
 
     applied = revolut is not None and source == "revolut"
     if revolut is None:
@@ -718,6 +1263,8 @@ def build_savings_breakdown(savings_balance, revolut_balance, revolut_source,
         "friend_share_applied": applied,
         "revolut_own": revolut_own,
         "everyday": everyday,
+        "everyday_ledger": everyday_ledger,
+        "everyday_source": everyday_source,
         "stock": stock,
         "pending_shipping": pending,
         "deposits_paid": deposits,
@@ -746,7 +1293,11 @@ def load_paid_capital():
 
 
 def _account_balance(path):
-    """Latest St. George balance, or None when the file is missing or empty."""
+    """Latest posted St. George ledger balance, or None when unread.
+
+    Used for the savings account. Pending rows are ignored. An available
+    column on this file is not used.
+    """
     if path is None or not path.exists():
         return None
     try:
@@ -754,6 +1305,23 @@ def _account_balance(path):
     except Exception as e:
         print(f"⚠️  savings goal: balance unavailable for {path.name}: {e}")
         return None
+
+
+def _everyday_position(path):
+    """Available and ledger balances for the everyday CSV.
+
+    A missing or unreadable file is source 'none'. The savings account does
+    not use this.
+    """
+    empty = {"ledger": None, "available": None, "source": "none"}
+    if path is None or not path.exists():
+        return empty
+    try:
+        export = read_stgeorge_export(path)
+    except Exception as e:
+        print(f"⚠️  savings goal: everyday balance unavailable: {e}")
+        return empty
+    return resolve_everyday_balances(export["transactions"], export["stated_available"])
 
 
 def _reselling_cash_balance():
@@ -794,7 +1362,15 @@ def savings_breakdown_lines(breakdown):
             )
         cash_bits.append(bit)
     if breakdown.get("everyday") is not None:
-        cash_bits.append(f"everyday ${breakdown['everyday']:,.2f}")
+        bit = f"everyday ${breakdown['everyday']:,.2f}"
+        ledger = breakdown.get("everyday_ledger")
+        if (
+            breakdown.get("everyday_source") in ("available", "pending")
+            and ledger is not None
+            and ledger != breakdown["everyday"]
+        ):
+            bit += f" available (ledger ${ledger:,.2f})"
+        cash_bits.append(bit)
     if cash_bits:
         lines.append(f"  Cash ${breakdown['cash']:,.2f}: " + ", ".join(cash_bits))
     if breakdown.get("capital") is not None:
@@ -816,8 +1392,9 @@ def analyse_savings():
 
     The total is every fund he holds: the savings-account balance, his share
     of the Revolut balance (the reselling cashflow balance minus
-    JARVIS_REVOLUT_FRIEND_SHARE), the St. George everyday balance when that
-    CSV is present, and reselling capital already paid (in-stock cost,
+    JARVIS_REVOLUT_FRIEND_SHARE), the St. George everyday available balance
+    when that CSV states one (otherwise its posted ledger balance), and
+    reselling capital already paid (in-stock cost,
     paid-pending-shipping cost, and deposits paid on deposit-paid rows).
     A source that cannot be read is skipped. pct, remaining, on_track, and
     projected_date all use that total. breakdown names each piece.
@@ -828,14 +1405,16 @@ def analyse_savings():
 
     bal1 = _account_balance(SAVINGS1_CSV)
     revolut_balance, revolut_source = _reselling_cash_balance()
-    everyday = _account_balance(EVERYDAY_CSV)
+    everyday_position = _everyday_position(EVERYDAY_CSV)
     breakdown = build_savings_breakdown(
         bal1,
         revolut_balance,
         revolut_source,
-        everyday,
+        everyday_position["available"],
         load_paid_capital(),
         revolut_friend_share(),
+        everyday_ledger=everyday_position["ledger"],
+        everyday_source=everyday_position["source"],
     )
 
     total = breakdown["total"]
@@ -1015,6 +1594,12 @@ def get_finance_summary():
     over_budget = spending["total_spend"] > weekly_budget
     budget_str = f"  (⚠ over ~${weekly_budget:.0f}/week budget)" if over_budget else f"  (within ~${weekly_budget:.0f}/week budget)"
     lines.append(f"  {'Total spend':<18} ${spending['total_spend']:.2f}{budget_str}")
+    excluded = spending.get("excluded_transfers") or {}
+    if excluded.get("count"):
+        lines.append(
+            f"  {'Pass-through':<18} ${excluded['total']:.2f}"
+            f"  ({excluded['count']} excluded)"
+        )
 
     # Flag big transactions
     if spending["big_transactions"]:
@@ -1114,7 +1699,7 @@ def get_finance_summary():
     return "\n".join(lines)
 
 
-def summarise_spending(transactions, start, end, weekly_budget):
+def summarise_spending(transactions, start, end, weekly_budget, extra_inflows=None):
     """
     Category totals and weekly-budget comparison for an inclusive date range.
 
@@ -1122,12 +1707,19 @@ def summarise_spending(transactions, start, end, weekly_budget):
     (internet withdrawals, transfers, Osko/Sct withdrawals to an owner name,
     Revolut card top-ups). A refund credit that matches a counted debit
     reduces that category and total_spend, so the category totals still add
-    up to total_spend. Descriptions on flagged rows are the full bank line.
+    up to total_spend. Pass-through withdrawals are omitted and reported on
+    excluded_transfers (count, total, items) so they can be audited.
+    Descriptions on flagged rows are the full bank line.
     Callers that send this to an external agent must redact sensitive text
     before shortening it, so a number cut at a character limit cannot leave
-    a short digit fragment.
+    a short digit fragment. extra_inflows defaults to external Revolut
+    transfers read from REVOLUT_CSV.
     """
-    recent = _net_spending_debits(transactions, start, end)
+    if extra_inflows is None:
+        extra_inflows = revolut_passthrough_inflows()
+    recent, excluded = _net_spending_debits(
+        transactions, start, end, extra_inflows,
+    )
 
     by_category = {}
     for t in recent:
@@ -1164,6 +1756,7 @@ def summarise_spending(transactions, start, end, weekly_budget):
         "over_budget": total > window_budget,
         "weekly_equivalent": round(total * 7.0 / span_days, 2) if span_days else 0.0,
         "flagged": flagged[:4],
+        "excluded_transfers": excluded,
     }
 
 

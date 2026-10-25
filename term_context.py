@@ -380,6 +380,12 @@ DEFAULT_OWN_ACCOUNT_RULES = {
 # Override with spending.refund_window_days in term_context.json (1–60).
 DEFAULT_REFUND_WINDOW_DAYS = 14
 
+# Money that arrives and leaves again inside this window is not spending.
+# Override under spending. in term_context.json.
+DEFAULT_PASSTHROUGH_WINDOW_DAYS = 7
+DEFAULT_PASSTHROUGH_TOLERANCE = 0.0
+DEFAULT_PASSTHROUGH_MAX_GROUP = 4
+
 
 def _normalise_deadline(raw) -> str:
     """Parses an ISO date or a human 'January 2027'-style string into an ISO date string."""
@@ -462,6 +468,48 @@ def get_refund_window_days() -> int:
     if days < 1 or days > 60:
         return DEFAULT_REFUND_WINDOW_DAYS
     return days
+
+
+def get_passthrough_settings() -> dict:
+    """
+    Window, dollar tolerance, and group size for pass-through matching.
+
+    Reads spending.passthrough_window_days (1–30, default 7),
+    spending.passthrough_tolerance (0–20 dollars, default 0), and
+    spending.passthrough_max_group (2–6, default 4). Missing or
+    out-of-range values fall back to those defaults. Tolerance is how far
+    a matched total may differ, in dollars. max_group is the most inflows
+    or outflows that can form one match.
+    """
+    raw = load_context().get("spending") or {}
+    if not isinstance(raw, dict):
+        raw = {}
+
+    def _bounded_int(key, default, lo, hi):
+        try:
+            value = int(raw.get(key, default))
+        except (TypeError, ValueError):
+            return default
+        if value < lo or value > hi:
+            return default
+        return value
+
+    try:
+        tolerance = float(raw.get("passthrough_tolerance", DEFAULT_PASSTHROUGH_TOLERANCE))
+    except (TypeError, ValueError):
+        tolerance = DEFAULT_PASSTHROUGH_TOLERANCE
+    if tolerance < 0 or tolerance > 20:
+        tolerance = DEFAULT_PASSTHROUGH_TOLERANCE
+
+    return {
+        "window_days": _bounded_int(
+            "passthrough_window_days", DEFAULT_PASSTHROUGH_WINDOW_DAYS, 1, 30,
+        ),
+        "tolerance": round(tolerance, 2),
+        "max_group": _bounded_int(
+            "passthrough_max_group", DEFAULT_PASSTHROUGH_MAX_GROUP, 2, 6,
+        ),
+    }
 
 
 def update_finance_goals(goals: dict):
