@@ -280,6 +280,20 @@ otherwise). `budget_for_range` prorates that budget by `days / 7`.
 is the Back Tap total for that span (category totals and an unmatched count,
 not the raw notes).
 
+`excluded_transfers` is money that arrived and left again, so it is not in
+`total_spend`, `by_category`, or `flagged`. It has `count`, `total`, and
+`items` (`date`, `amount`, redacted `description`). A match is an
+uncategorised Osko or Sct withdrawal to someone else, covered by Osko or
+Sct deposits on the everyday account and/or external Revolut transfers, of
+the same amount or a sum of up to four legs. The deposit has to be on the
+withdrawal date or up to `spending.passthrough_window_days` before it
+(default 7, range 1–30). `spending.passthrough_tolerance` (default $0,
+max $20) is how far the totals may differ.
+`spending.passthrough_max_group` (default 4, range 2–6) caps each side.
+Card purchases, categorised Oskos (tickets, shops), salary, internet
+deposits from his own accounts, and Revolut top-ups are not matches.
+Own-account transfers and refunds still use their existing rules.
+
 #### Savings
 
 ```
@@ -305,8 +319,18 @@ and is left out of the sums (it is not treated as $0).
   the whole Revolut balance counts until it is set. It is subtracted only
   when `revolut_source` is `revolut` (`friend_share_applied`). His share
   (`revolut_own`) is never negative.
-- `everyday` — latest `finance/everyday.csv` balance. Null when that
-  export is missing or unreadable, and then left out of the sums.
+- `everyday` — balance that counts from `finance/everyday.csv`. This is
+  the available balance when the export states one (an Available / Avail
+  column, or an `Available Balance` line before the header). Otherwise it
+  is the posted ledger balance minus pending debits that have not posted
+  yet. Pending credits are not added. With neither signal it is the posted
+  ledger balance, same as before. Null when that export is missing or
+  unreadable, and then left out of the sums.
+- `everyday_ledger` — posted ledger balance from that file. Null when it
+  was not read.
+- `everyday_source` — `available` (the export stated one), `pending`
+  (derived by subtracting unmatched pending debits), `ledger` (no
+  available figure and no unmatched pending debits), or `none`.
 - `stock`, `pending_shipping`, `deposits_paid` — reselling capital already
   paid: in-stock cost, paid-pending-shipping cost, and `deposit_paid` on
   deposit-paid rows. The unpaid deposit owing is not included. Every

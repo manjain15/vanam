@@ -78,6 +78,11 @@ def find_recurring(transactions, months=3):
     """
     Finds transactions that recur monthly.
     Groups by normalised merchant name, checks if it appears in multiple months.
+
+    Pending rows are skipped so a hold and its posted twin are not two
+    charges. Pass-through matching is spending-only. A recurring Osko to
+    someone else (S Ahuja, for example) stays in this review list even
+    when a matching deposit removes it from the spend total.
     """
     tz    = TIMEZONE
     today = datetime.datetime.now(tz).date()
@@ -87,6 +92,7 @@ def find_recurring(transactions, months=3):
         t for t in transactions
         if t["date"] >= cutoff
         and t["debit"] > 0
+        and not t.get("pending")
         and not any(acc in t["description"] for acc in OWN_ACCOUNTS)
         and not any(kw in t["description"].lower() for kw in NORMAL_RECURRING)
         and not _is_internal_spend(t.get("description", ""))
