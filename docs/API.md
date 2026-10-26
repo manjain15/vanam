@@ -297,9 +297,15 @@ week. `over_budget` compares `total_spend` with `budget_for_range`.
 Shops from the category list are already there. A person is never a
 subscription just because the payment repeats.
 
-Osko descriptions in this payload have the last two words redacted. Label
-from a fragment that is still visible (the reference, not only the payee),
-or use Telegram, which shows the bank text.
+Osko descriptions in this payload have the last two words redacted. Those
+words are the payee. `unreviewed.items[].payee` is that name, unredacted,
+so it can be labelled. Do not send `[redacted]` back as the fragment: it is
+not on the bank line, and the label is refused. Telegram `/unreviewed`
+prints the full line, the posted date, and a `/who` or `/label` command
+that matches it. A date printed in the description (25Oct) is accepted as
+well as the posted date. `/who` and `/label` say which lines they matched,
+and they say so when they matched nothing. `/who Jane Doe` saves a person;
+the word `person` is optional.
 
 ```
 curl -sS -H "Authorization: Bearer $JARVIS_API_TOKEN" \
@@ -327,9 +333,10 @@ and small payments are not suggested. The sheet is only a hint.
 The same answers can be written by editing `data/counterparties.json` on
 the VPS (`/home/jarvis/jarvis/data/counterparties.json`). It is read on the
 next request. A restart is not required to label. `data/` is not in git.
-Telegram: `/unreviewed`, `/who "Nilesh Banga" person`, `/label 2026-10-26
-4932 F40S resale`, `/resale`. `/who ... large` sets `large_transfers` to
-`spending`.
+Telegram: `/unreviewed`, `/who "Nilesh Banga"`, `/label 2026-10-26 4932
+F40S resale`, `/resale`. `/who ... large` sets `large_transfers` to
+`spending`. A `/who` or `/label` that matches nothing says so. The person
+is still saved; the line is not.
 
 `data/transfer_overrides.json` is no longer read. There is no rail-wide
 net and no carry from the previous week.

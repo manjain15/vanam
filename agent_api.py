@@ -1549,19 +1549,36 @@ def apply_counterparty_write(body):
 
 
 def apply_line_label(body):
-    """Label one bank line as resale, spending, or income."""
+    """Label one bank line as resale, spending, or income.
+
+    The line has to be in the everyday export. A fragment that is not on
+    that line, including the redacted payee, is refused and nothing is saved.
+    """
+    import finance_tracker
     import counterparties
 
     if not isinstance(body, dict):
         raise ValueError("JSON object required")
-    rule = counterparties.label_line(
+    if not finance_tracker.EVERYDAY_CSV.exists():
+        raise ValueError("no everyday account export")
+    transactions = finance_tracker.parse_stgeorge_csv(finance_tracker.EVERYDAY_CSV)
+    result = counterparties.label_matching(
+        transactions,
         body.get("date"),
         body.get("amount"),
         body.get("description"),
         body.get("purpose"),
         body.get("direction") or "",
     )
-    return rule
+    saved = result["saved"][0]
+    return {
+        "date": saved["date"],
+        "amount": saved["amount"],
+        "description": saved["description"],
+        "purpose": saved["purpose"],
+        "direction": saved["direction"],
+        "matches": result["matches"],
+    }
 
 
 def apply_resale_accept(start, end):

@@ -174,5 +174,9 @@ Routes: GET /finance and /finance/*, POST /spend, GET /flags, GET /today.
   same payload lists role, subscription, and large_transfers.
   To label: POST /finance/counterparties, POST /finance/lines, or
   POST /finance/resale (accepts the suggestion for the window).
-  data/transfer_overrides.json is not read.
+  unreviewed.items[].payee is the name GET /finance otherwise hides.
+  Do not send [redacted] as a description fragment. A line label that
+  matches nothing is a 400 and nothing is saved. The date in the bank
+  text (25Oct) counts as well as the posted date. Spending is refused
+  on money coming in. data/transfer_overrides.json is not read.
 ```

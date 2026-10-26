@@ -371,5 +371,9 @@ def test_telegram_lists_and_accepts_the_same_resale_group(tmp_path, monkeypatch)
 
     who = jarvis_telegram.handle_command('/who "Sam Seven" person')
     assert "Sam Seven" in who
-    labelled = jarvis_telegram.handle_command("/label 2026-10-21 26 halloween spending")
-    assert "spending" in labelled
+    assert "not on any transfer" in who
+    labelled = jarvis_telegram.handle_command(
+        f"/label {today.isoformat()} 26 halloween spending"
+    )
+    assert "Labelled 1 line" in labelled
+    assert "Ada Costume" in labelled

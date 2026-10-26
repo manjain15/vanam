@@ -22,8 +22,8 @@ summary.
 
 import datetime
 import json
-import os
 import re
+import threading
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent
@@ -429,13 +429,46 @@ def load_store(path=None):
     return {"counterparties": list(by_id.values()), "lines": lines}
 
 
+_PATH_LOCKS = {}
+_PATH_LOCKS_GUARD = threading.Lock()
+
+_MONTHS = {
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+    "jul": 7, "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+
+def _path_lock(path):
+    """In-process lock for one file. flock alone does not separate threads."""
+    key = str(Path(path))
+    with _PATH_LOCKS_GUARD:
+        lock = _PATH_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _PATH_LOCKS[key] = lock
+        return lock
+
+
 def _write_user(user, path):
     """Write the user layer. Defaults are not copied into the file."""
+    from json_store import atomic_write_json
+    atomic_write_json(Path(path), user)
+
+
+def _update_user(path, mutate):
+    """Read the user file, change it, and write it back as one locked step.
+
+    Telegram and the API both write this file. A label that read the file
+    before a /who, then wrote afterwards, used to drop the person. The
+    resale lines survived because they were in the stale copy.
+    """
+    from json_store import file_lock
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(user, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    with _path_lock(path):
+        with file_lock(path):
+            user = _read_user(path)
+            mutate(user)
+            _save_user(user, path)
 
 
 def _save_user(user, path):
@@ -491,20 +524,96 @@ def suggest_category(description):
     return None
 
 
-def _line_purpose(day, direction, amount_cents, description, lines):
-    """Stored purpose for this line, or None. The first match wins."""
-    desc = _normalise(description)
-    for rule in lines:
-        if rule["date"] != day.isoformat():
+def description_dates(description, year):
+    """Dates printed in the bank text, such as 25Oct or 25Oct00:12.
+
+    St George often posts a midnight line on the previous date. The text
+    still says 25Oct. A label typed from that text has to hit the line.
+    """
+    found = set()
+    for match in re.finditer(r"\b(\d{2})([a-z]{3,4})(?:\d{2}:\d{2})?\b", _normalise(description)):
+        month = _MONTHS.get(match.group(2))
+        if month is None:
             continue
+        try:
+            found.add(datetime.date(int(year), month, int(match.group(1))).isoformat())
+        except ValueError:
+            continue
+    return found
+
+
+def _parse_day(value, year=None):
+    """A date, YYYY-MM-DD, or the 25Oct form printed on a bank line."""
+    if isinstance(value, datetime.datetime):
+        return value.date()
+    if isinstance(value, datetime.date):
+        return value
+    text = str(value or "").strip()
+    try:
+        return datetime.date.fromisoformat(text[:10])
+    except ValueError:
+        pass
+    match = re.fullmatch(r"(\d{1,2})([A-Za-z]{3,4})(\d{4})?", text)
+    if match is None:
+        raise ValueError("date must be YYYY-MM-DD, like 2026-10-25")
+    if year is None:
+        year = int(match.group(3) or _today().year)
+    month = _MONTHS.get(match.group(2).lower())
+    if month is None:
+        raise ValueError("date must be YYYY-MM-DD, like 2026-10-25")
+    try:
+        return datetime.date(int(year), month, int(match.group(1)))
+    except ValueError as exc:
+        raise ValueError("date must be YYYY-MM-DD, like 2026-10-25") from exc
+
+
+def _today():
+    """Today in the configured timezone, for a 25Oct date with no year."""
+    try:
+        import pytz
+        from config import TIMEZONE
+        return datetime.datetime.now(pytz.timezone(TIMEZONE)).date()
+    except Exception:
+        return datetime.date.today()
+
+
+def _parse_amount(amount):
+    """Dollars, allowing a leading $ and a thousands comma."""
+    text = str(amount).strip().replace("$", "").replace(",", "")
+    return float(text)
+
+
+def payee_name(description):
+    """The last two words on the line. St George puts the payee there.
+
+    Those are the words GET /finance redacts, so a label copied from the
+    API often does not contain the name that is on the bank line.
+    """
+    words = payee_phrase(description).split()
+    if len(words) >= 2:
+        return " ".join(words[-2:])
+    return " ".join(words)
+
+
+def _line_purpose(day, direction, amount_cents, description, lines):
+    """Stored purpose for this line, or None. The first match wins.
+
+    The rule date may be the posted date or the date printed in the
+    description. A fragment that is not in the bank text does not match,
+    including the API's [redacted] marker.
+    """
+    desc = _normalise(description)
+    printed = description_dates(description, day.year)
+    for rule in lines:
         if _cents(rule["amount"]) != amount_cents:
             continue
         if rule.get("direction") and rule["direction"] != direction:
             continue
         fragment = rule.get("description") or ""
-        if fragment and fragment not in desc:
+        if not fragment or fragment not in desc or "redacted" in fragment:
             continue
-        return rule["purpose"]
+        if rule["date"] == day.isoformat() or rule["date"] in printed:
+            return rule["purpose"]
     return None
 
 
@@ -607,6 +716,11 @@ def classify(transactions, start, end, store=None, sheet_amounts=None):
             continue
         if purpose == "spending" and row["direction"] == "out":
             row["bucket"] = "spend"
+            continue
+        if purpose == "spending" and row["direction"] == "in":
+            # He marked the deposit as reviewed. Leaving it unreviewed made
+            # the label look like it had not been saved.
+            row["bucket"] = "credit"
             continue
         if purpose == "income" and row["direction"] == "in":
             row["bucket"] = "income"
@@ -718,6 +832,7 @@ def _unreviewed_item(row):
         "counterparty": counterparty["name"] if counterparty else None,
         "role": counterparty["role"] if counterparty else "unknown",
         "suggestion": row["suggestion"],
+        "payee": payee_name(row["description"]),
     }
 
 
@@ -791,23 +906,25 @@ def upsert_counterparty(name, role, aliases=None, category=None, subscription=Fa
         _slug(name), name, role, alias_list, category, subscription and role != "person",
     )
     record["large_transfers"] = "spending" if str(large_transfers).lower() == "spending" else "ask"
-    user = _read_user(path)
-    people = []
-    replaced = False
-    for raw in user["counterparties"]:
-        current = _normalise_user_counterparty(raw)
-        if current and current["id"] == record["id"]:
-            for alias in current["aliases"]:
-                if alias not in record["aliases"]:
-                    record["aliases"].append(alias)
+
+    def mutate(user):
+        people = []
+        replaced = False
+        for raw in user["counterparties"]:
+            current = _normalise_user_counterparty(raw)
+            if current and current["id"] == record["id"]:
+                for alias in current["aliases"]:
+                    if alias not in record["aliases"]:
+                        record["aliases"].append(alias)
+                people.append(record)
+                replaced = True
+            elif current:
+                people.append(current)
+        if not replaced:
             people.append(record)
-            replaced = True
-        elif current:
-            people.append(current)
-    if not replaced:
-        people.append(record)
-    user["counterparties"] = people
-    _save_user(user, path)
+        user["counterparties"] = people
+
+    _update_user(path, mutate)
     return record
 
 
@@ -819,16 +936,13 @@ def label_line(date, amount, description, purpose, direction="", path=None):
     replaces the purpose.
     """
     path = Path(path) if path is not None else STORE_PATH
-    if isinstance(date, datetime.date):
-        day = date
-    else:
-        day = datetime.date.fromisoformat(str(date)[:10])
+    day = _parse_day(date)
     purpose = str(purpose or "").strip().lower().replace("_", " ")
     if purpose in ("pass-through", "passthrough", "pass through"):
         purpose = "resale"
     if purpose not in PURPOSES:
         raise ValueError("purpose must be resale, spending, or income")
-    cents = _cents(amount)
+    cents = _cents(_parse_amount(amount))
     if cents <= 0:
         raise ValueError("amount must be greater than zero")
     direction = str(direction or "").strip().lower()
@@ -844,24 +958,172 @@ def label_line(date, amount, description, purpose, direction="", path=None):
         "description": fragment,
         "purpose": purpose,
     }
-    user = _read_user(path)
-    kept = []
-    for raw in user["lines"]:
-        current = _normalise_line(raw)
-        if current is None:
-            continue
-        same = (
-            current["date"] == rule["date"]
-            and _cents(current["amount"]) == cents
-            and current["description"] == fragment
-            and current["direction"] == direction
-        )
-        if not same:
-            kept.append(current)
-    kept.append(rule)
-    user["lines"] = kept
-    _save_user(user, path)
+
+    def mutate(user):
+        kept = []
+        for raw in user["lines"]:
+            current = _normalise_line(raw)
+            if current is None:
+                continue
+            same = (
+                current["date"] == rule["date"]
+                and _cents(current["amount"]) == cents
+                and current["description"] == fragment
+                and current["direction"] == direction
+            )
+            if not same:
+                kept.append(current)
+        kept.append(rule)
+        user["lines"] = kept
+
+    _update_user(path, mutate)
     return rule
+
+
+def _txn_side(txn):
+    """Direction and amount for one parsed line, or (None, 0) when it is empty."""
+    debit = float(txn.get("debit") or 0)
+    credit = float(txn.get("credit") or 0)
+    if debit > 0:
+        return "out", debit
+    if credit > 0:
+        return "in", credit
+    return None, 0.0
+
+
+def find_label_hits(transactions, date, amount, description, direction=""):
+    """Bank lines this label would apply to.
+
+    A hit is the same amount, the fragment is in the bank text, and the
+    date is either the posted date or the date printed in the description.
+    """
+    typed = _parse_day(date)
+    cents = _cents(_parse_amount(amount))
+    if cents <= 0:
+        raise ValueError("amount must be greater than zero")
+    fragment = _normalise(description)
+    if not fragment:
+        raise ValueError("description fragment is required")
+    direction = str(direction or "").strip().lower()
+    if direction not in ("", "in", "out"):
+        raise ValueError("direction must be in or out")
+    hits = []
+    same_text = []
+    for txn in transactions:
+        if txn.get("pending"):
+            continue
+        day = txn.get("date")
+        side, amt = _txn_side(txn)
+        if day is None or side is None or _cents(amt) != cents:
+            continue
+        desc = txn.get("description") or ""
+        if fragment not in _normalise(desc) or "redacted" in fragment:
+            continue
+        if direction and direction != side:
+            continue
+        row = {
+            "date": day.isoformat(),
+            "amount": round(amt, 2),
+            "direction": side,
+            "description": desc,
+            "payee": payee_name(desc),
+            "posted_note": "",
+        }
+        printed = description_dates(desc, day.year)
+        if day == typed or typed.isoformat() in printed:
+            if day != typed:
+                row["posted_note"] = (
+                    f" (the description says {typed.isoformat()}, "
+                    f"the bank posted {day.isoformat()})"
+                )
+            hits.append(row)
+        else:
+            same_text.append(row)
+    return hits, same_text
+
+
+def label_matching(transactions, date, amount, description, purpose, direction="", path=None):
+    """Label the lines this rule hits. Raise ValueError when it hits none.
+
+    The stored date is the posted date, so a later read does not depend on
+    the date that happened to be printed in the description. Purpose
+    spending is refused for a deposit, and income is refused for a payment.
+    """
+    purpose_text = str(purpose or "").strip().lower().replace("_", " ")
+    if purpose_text in ("pass-through", "passthrough", "pass through"):
+        purpose_text = "resale"
+    if purpose_text not in PURPOSES:
+        raise ValueError("purpose must be resale, spending, or income")
+    fragment = _normalise(description)
+    if "redacted" in fragment:
+        raise ValueError(
+            "That fragment is the redacted payee, not the bank text. "
+            "Use /unreviewed. It shows the name. Nothing was saved."
+        )
+    hits, same_text = find_label_hits(transactions, date, amount, description, direction)
+    if not hits:
+        typed = _parse_day(date)
+        if same_text:
+            posted = ", ".join(row["date"] for row in same_text)
+            raise ValueError(
+                f"No line on {typed.isoformat()} matches ${ _dollars(_cents(_parse_amount(amount))):.2f} "
+                f"containing {fragment!r}. The same text is posted on {posted}. "
+                "Use that posted date."
+            )
+        raise ValueError(
+            f"No line matches ${ _dollars(_cents(_parse_amount(amount))):.2f} "
+            f"containing {fragment!r}. Nothing was saved."
+        )
+    sides = {row["direction"] for row in hits}
+    if purpose_text == "spending" and sides == {"in"}:
+        raise ValueError(
+            "That line is money coming in. Label it income, or resale if it is a buyer deposit. "
+            "Nothing was saved."
+        )
+    if purpose_text == "income" and sides == {"out"}:
+        raise ValueError(
+            "That line is money going out. Label it spending, or resale if it is a forward. "
+            "Nothing was saved."
+        )
+    saved = []
+    seen = set()
+    for row in hits:
+        key = (row["date"], row["direction"], fragment, _cents(row["amount"]))
+        if key in seen:
+            continue
+        seen.add(key)
+        saved.append(label_line(
+            row["date"], row["amount"], fragment, purpose_text, row["direction"], path,
+        ))
+    return {"saved": saved, "matches": hits}
+
+
+def lines_for_counterparty(transactions, start, end, counterparty_id, path=None):
+    """Transfers in the window whose payee is this saved counterparty."""
+    store = load_store(path)
+    hits = []
+    for txn in transactions:
+        if txn.get("pending"):
+            continue
+        day = txn.get("date")
+        side, amount = _txn_side(txn)
+        if day is None or side is None or day < start or day > end:
+            continue
+        if is_self(txn.get("description") or ""):
+            continue
+        if rail_of(txn.get("description") or "") not in ("transfer", "direct_credit"):
+            continue
+        match = match_counterparty(txn.get("description") or "", store)
+        if not match or match.get("id") != counterparty_id:
+            continue
+        hits.append({
+            "date": day.isoformat(),
+            "amount": round(amount, 2),
+            "direction": side,
+            "description": txn.get("description") or "",
+            "payee": payee_name(txn.get("description") or ""),
+        })
+    return hits
 
 
 def accept_resale(transactions, start, end, path=None):
