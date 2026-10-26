@@ -1284,10 +1284,10 @@ def get_spending_payload(start, end):
     Everyday-account spend for an inclusive range, versus the weekly budget.
 
     Category totals use finance_tracker.summarise_spending. Live Back Tap
-    totals are included when the window reaches today. transfers_net is the
-    person-to-person in, out, net, and counted remainder.
-    excluded_transfers lists withdrawals left out of the total. No raw
-    descriptions leave this function without account-number redaction.
+    totals are included when the window reaches today. unreviewed lists
+    transfers that are not in the total, and the week is unfinished while
+    that list has anything on it. resale is the labelled group only.
+    No raw descriptions leave this function without account-number redaction.
     """
     import finance_tracker
 
@@ -1513,7 +1513,75 @@ def get_finance_payload(start, end, months, reselling_days):
             payload[name] = {"available": False, "error": f"{name} unavailable"}
             unavailable.append(name)
     payload["unavailable"] = unavailable
+    try:
+        import counterparties
+        payload["counterparties"] = counterparties.public_counterparties()
+    except Exception as e:
+        print(f"⚠️  /finance counterparties failed: {e}")
+        payload["counterparties"] = []
     return payload
+
+
+def apply_counterparty_write(body):
+    """Remember a person or a shop. A person is never stored as a subscription."""
+    import counterparties
+
+    if not isinstance(body, dict):
+        raise ValueError("JSON object required")
+    aliases = body.get("aliases") or []
+    if isinstance(aliases, str):
+        aliases = [aliases]
+    record = counterparties.upsert_counterparty(
+        body.get("name"),
+        body.get("role"),
+        aliases=aliases,
+        category=body.get("category"),
+        subscription=bool(body.get("subscription")),
+        large_transfers=body.get("large_transfers") or "ask",
+    )
+    return {
+        "id": record["id"],
+        "name": record["name"],
+        "role": record["role"],
+        "subscription": bool(record.get("subscription")),
+        "large_transfers": record.get("large_transfers") or "ask",
+    }
+
+
+def apply_line_label(body):
+    """Label one bank line as resale, spending, or income."""
+    import counterparties
+
+    if not isinstance(body, dict):
+        raise ValueError("JSON object required")
+    rule = counterparties.label_line(
+        body.get("date"),
+        body.get("amount"),
+        body.get("description"),
+        body.get("purpose"),
+        body.get("direction") or "",
+    )
+    return rule
+
+
+def apply_resale_accept(start, end):
+    """Label every suggested resale line in the window. One action.
+
+    Reads the everyday CSV. Card spend and small payments are not suggested,
+    so they are not labelled. Returns how many lines were written.
+    """
+    import finance_tracker
+    import counterparties
+
+    if not finance_tracker.EVERYDAY_CSV.exists():
+        raise ValueError("no everyday account export")
+    transactions = finance_tracker.parse_stgeorge_csv(finance_tracker.EVERYDAY_CSV)
+    count = counterparties.accept_resale(transactions, start, end)
+    return {
+        "labelled": count,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+    }
 
 
 def _bounded_int(raw, default, lo, hi, name):
@@ -1873,6 +1941,42 @@ def create_app(token=None, bot_tokens=None):
         except Exception as e:
             print(f"⚠️  /finance/reselling failed: {e}")
             return jsonify({"error": "reselling failed"}), 500
+
+    @app.post("/finance/counterparties")
+    def finance_counterparties():
+        """Remember who a name is. role is person or merchant."""
+        body = request.get_json(silent=True)
+        try:
+            return jsonify(apply_counterparty_write(body))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            print(f"⚠️  /finance/counterparties failed: {e}")
+            return jsonify({"error": "counterparty update failed"}), 500
+
+    @app.post("/finance/lines")
+    def finance_lines():
+        """Label one line. purpose is resale, spending, or income."""
+        body = request.get_json(silent=True)
+        try:
+            return jsonify(apply_line_label(body))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            print(f"⚠️  /finance/lines failed: {e}")
+            return jsonify({"error": "line label failed"}), 500
+
+    @app.post("/finance/resale")
+    def finance_resale():
+        """Accept this window's resale suggestion. Labels those lines only."""
+        try:
+            start, end = _finance_dates()
+            return jsonify(apply_resale_accept(start, end))
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        except Exception as e:
+            print(f"⚠️  /finance/resale failed: {e}")
+            return jsonify({"error": "resale label failed"}), 500
 
     return app
 

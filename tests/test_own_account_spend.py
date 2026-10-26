@@ -36,6 +36,21 @@ def _isolated_term_context(tmp_path, monkeypatch):
     monkeypatch.setattr(term_context, "CONTEXT_FILE", tmp_path / "term_context.json")
 
 
+def _remember(name, role="person", aliases=None, large_transfers="ask"):
+    """Save a counterparty into the isolated store."""
+    import counterparties
+    counterparties.upsert_counterparty(
+        name, role, aliases=aliases, large_transfers=large_transfers,
+    )
+
+
+def _remember_week_people():
+    """The September payees, so their Oskos count as spending."""
+    _remember("R Jaiswal", aliases=["rishi jaiswal"])
+    _remember("Abhishek Goyal")
+    _remember("W Tynan")
+
+
 def _write_stgeorge(path, rows):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as handle:
@@ -115,6 +130,7 @@ def test_internal_rules_cover_owner_payee_and_existing_markers():
         "Internet Withdrawal To 0000206850220"
     ) is True
     assert finance_tracker._is_internal_spend("Transfer to savings") is True
+    assert finance_tracker._is_internal_spend("Transfer to Corner Lane") is False
     assert finance_tracker._is_internal_spend(
         "Osko Withdrawal 22Sep Revolut Friend Jane Doe"
     ) is False
@@ -141,6 +157,7 @@ def test_owner_name_comes_from_term_context(tmp_path):
 
 
 def test_week_of_22_sep_2026_counts_only_genuine_spend(tmp_path):
+    _remember_week_people()
     txns = _parsed_week(tmp_path)
     summary = finance_tracker.summarise_spending(txns, WEEK_START, WEEK_END, 75)
 
@@ -165,8 +182,31 @@ def test_week_of_22_sep_2026_counts_only_genuine_spend(tmp_path):
     assert by_desc["Osko Withdrawal 22Sep Knockout R Jaiswal"]["category"] == "Entertainment"
 
 
+def test_unlabelled_small_oskos_wait_on_the_review_list(tmp_path):
+    """Seeded shops count. A person Vanam has not been told about does not."""
+    txns = _parsed_week(tmp_path)
+    summary = finance_tracker.summarise_spending(txns, WEEK_START, WEEK_END, 75)
+
+    assert summary["total_spend"] == 270.25
+    assert summary["by_category"] == {
+        "Entertainment": 254.95,
+        "Other": 3.60,
+        "Transport": 11.70,
+    }
+    assert summary["unfinished"] is True
+    reviewed = {(item["amount"], item["direction"]) for item in summary["unreviewed"]["items"]}
+    assert reviewed == {(25.0, "out"), (10.0, "out")}
+    blob = " ".join(item["description"].lower() for item in summary["unreviewed"]["items"])
+    assert "doomsday" in blob
+    assert "hot wheels" in blob
+    assert "manav" not in blob
+    assert "revolut" not in blob
+    assert "knockout" not in blob
+
+
 def test_analyse_spending_matches_the_finance_route_for_that_week(tmp_path, monkeypatch):
     """Morning brief and weekly review both call analyse_spending."""
+    _remember_week_people()
     txns = _parsed_week(tmp_path)
 
     class FrozenDateTime(datetime.datetime):
@@ -216,13 +256,13 @@ def test_subscription_audit_skips_self_transfers_and_keeps_real_merchants(tmp_pa
     blob = " ".join(merchants)
     assert "revolut" not in blob
     assert "manav" not in blob
-    assert any("knockout" in merchant for merchant in merchants)
+    assert not any("knockout" in merchant for merchant in merchants)
     assert any("spotify" in merchant for merchant in merchants)
 
     summary = subscription_audit.summarise_subscriptions(months=3)
     assert summary["monthly_known"] == 11.99
-    assert all("revolut" not in item["merchant"] for item in summary["review"])
-    assert summary["monthly_review"] == 120.0
+    assert summary["review"] == []
+    assert summary["monthly_review"] == 0.0
 
 
 def test_reselling_still_ignores_own_topups_and_counts_real_cashflow(tmp_path, monkeypatch):
@@ -245,12 +285,13 @@ def test_reselling_still_ignores_own_topups_and_counts_real_cashflow(tmp_path, m
     cash = finance_tracker.analyse_reselling(days=30)
     assert cash["source"] == "revolut"
     assert cash["available"] is True
-    assert cash["deployed"] == 70.0
-    assert cash["returned"] == 80.0
-    assert cash["net"] == 10.0
+    assert cash["deployed"] == 40.0
+    assert cash["returned"] == 0.0
+    assert cash["net"] == -40.0
 
 
 def test_morning_brief_week_lists_genuine_categories_only(tmp_path, monkeypatch):
+    _remember_week_people()
     everyday = tmp_path / "everyday.csv"
     _write_stgeorge(everyday, _week_rows())
     monkeypatch.setattr(finance_tracker, "EVERYDAY_CSV", everyday)
@@ -326,21 +367,29 @@ def _refund_week_rows():
 
 
 def test_refunded_knockout_brings_the_week_to_185(tmp_path, monkeypatch):
+    _remember_week_people()
     path = tmp_path / "everyday.csv"
     _write_stgeorge(path, _refund_week_rows())
     txns = finance_tracker.parse_stgeorge_csv(path)
     summary = finance_tracker.summarise_spending(txns, WEEK_START, WEEK_END, 75)
 
-    # Doomsday and Hot Wheels are person-to-person Oskos. Sale deposits in
-    # this week are larger, so that net is negative and those two drop out.
-    # The PayPal visa charge stays in Other. Tickets and card spend stay.
-    assert summary["total_spend"] == 150.25
+    # Rishi's $120 reduces the 18:35 Knockout. The 10:30 repurchase stays.
+    # Doomsday and Hot Wheels are known people, so they stay in the total.
+    # The sale deposits are unreviewed. They are not income and they do not
+    # cancel the costume-sized lines.
+    assert summary["total_spend"] == 185.25
     assert summary["by_category"]["Entertainment"] == 134.95
     assert summary["by_category"]["Transport"] == 11.70
-    assert summary["by_category"]["Other"] == 3.60
+    assert summary["by_category"]["Other"] == 38.60
     assert [row["amount"] for row in summary["flagged"]] == [120.0]
     assert "jaiswal" in summary["flagged"][0]["description"].lower()
-    assert summary["transaction_count"] == 5
+    assert summary["transaction_count"] == 7
+    assert summary["unfinished"] is True
+    assert summary["resale"]["income"] == 0
+    unreviewed = {item["amount"] for item in summary["unreviewed"]["items"]}
+    assert 17000 in unreviewed
+    assert 25 not in unreviewed
+    assert 10 not in unreviewed
 
     class FrozenDateTime(datetime.datetime):
         @classmethod
@@ -352,7 +401,7 @@ def test_refunded_knockout_brings_the_week_to_185(tmp_path, monkeypatch):
 
     monkeypatch.setattr(finance_tracker.datetime, "datetime", FrozenDateTime)
     spending = finance_tracker.analyse_spending(txns, days=7)
-    assert round(spending["total_spend"], 2) == 150.25
+    assert round(spending["total_spend"], 2) == 185.25
     assert round(spending["category_totals"]["Entertainment"], 2) == 134.95
     assert [t["debit"] for t in spending["big_transactions"]] == [120.0]
     knockouts = [
@@ -397,9 +446,8 @@ def test_refund_matching_is_conservative():
     summary = finance_tracker.summarise_spending(
         txns, day, datetime.date(2026, 9, 28), 75,
     )
-    # The $15 Visa refund reduces a Woolworths debit. The other credits do
-    # not refund those purchases. The Nilesh Osko is person-to-person and
-    # the deposits in this window are larger, so it nets out.
+    # The $15 Visa refund reduces a Woolworths debit. Unknown Oskos, including
+    # the Nilesh pair, stay on the unreviewed list and are not in the total.
     assert summary["total_spend"] == 804.0
     assert summary["by_category"]["Food & dining"] == 550.0  # 390 + 135 + 40 - 15
     assert summary["by_category"]["Entertainment"] == 174.0  # 54 + 120, Priya is not a refund
@@ -408,6 +456,7 @@ def test_refund_matching_is_conservative():
 
 
 def test_one_debit_takes_one_refund_only():
+    _remember("R Jaiswal", aliases=["rishi jaiswal"])
     day = datetime.date(2026, 9, 22)
     txns = [
         _txn(day, "Osko Withdrawal 22Sep18:35 Knockout R Jaiswal", debit=120),
@@ -424,6 +473,7 @@ def test_one_debit_takes_one_refund_only():
 
 
 def test_refund_window_is_configurable(tmp_path):
+    _remember("R Jaiswal", aliases=["rishi jaiswal"])
     day = datetime.date(2026, 9, 1)
     txns = [
         _txn(day, "Osko Withdrawal 01Sep18:35 Knockout R Jaiswal", debit=120),
