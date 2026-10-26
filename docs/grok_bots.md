@@ -164,12 +164,15 @@ Routes: GET /finance and /finance/*, POST /spend, GET /flags, GET /today.
   pending); everyday_ledger is the posted balance. pct, remaining,
   on_track and projected_date use that total. breakdown.savings is the
   savings account alone. A null component was not read.
-  spending.transfers_net is person-to-person money on the everyday
-  account: in, out, net, and counted. Only counted is spending (Other).
-  A negative net does not reduce card spend. Mention it when he asks
-  why a large Osko disappeared. excluded_transfers lists the withdrawals
-  that were left out. reselling on that object is Revolut and is not
-  part of the spend total. A one-off exception is a rule in
-  data/transfer_overrides.json (date, amount, description fragment,
-  treat spending or pass-through), read on the next request.
+  spending.unreviewed is transfers not in the total. unfinished is true
+  while that list has anything on it. Do not treat the total as the
+  whole week when unfinished is true. spending.resale is only lines
+  labelled resale: in, out, net, and income (the leftover, never
+  negative spending). A buyer deposit is not personal income, and a
+  large forward is not spending, until both are labelled. Card spend
+  and small payments to people are separate. counterparties on the
+  same payload lists role, subscription, and large_transfers.
+  To label: POST /finance/counterparties, POST /finance/lines, or
+  POST /finance/resale (accepts the suggestion for the window).
+  data/transfer_overrides.json is not read.
 ```

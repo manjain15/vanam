@@ -187,11 +187,10 @@ def test_subscriptions_split_and_redact(tmp_path, monkeypatch):
     assert body["available"] is True
     assert body["monthly_known"] == 11.99
     assert body["known"][0]["label"] == "Spotify"
-    assert any("acme cloud" in row["merchant"] for row in body["review"])
-    assert body["monthly_review"] == 15.0
+    assert body["review"] == []
+    assert body["monthly_review"] == 0.0
     assert ACCOUNT not in text
     assert OTHER_ACCOUNT not in text
-    assert "[redacted]" in text
     assert _client().get("/finance/subscriptions?months=0", headers=AUTH).status_code == 400
 
 
@@ -246,6 +245,14 @@ def test_finance_bundle_isolates_section_errors(tmp_path, monkeypatch):
     assert ACCOUNT not in res.get_data(as_text=True)
 
 
+def _remember_week_people():
+    """September payees, so their Oskos count and the self-transfers do not."""
+    import counterparties
+    counterparties.upsert_counterparty("R Jaiswal", "person", aliases=["rishi jaiswal"])
+    counterparties.upsert_counterparty("Abhishek Goyal", "person")
+    counterparties.upsert_counterparty("W Tynan", "person")
+
+
 def test_own_account_transfers_are_not_spending(tmp_path, monkeypatch):
     """The 22–28 Sep 2026 pattern: self-Osko and Revolut top-ups are not spend.
 
@@ -254,6 +261,7 @@ def test_own_account_transfers_are_not_spending(tmp_path, monkeypatch):
     """
     today = _today()
     everyday, savings = _patch_files(monkeypatch, tmp_path)
+    _remember_week_people()
     monkeypatch.setattr(agent_api, "load_reselling_inventory", lambda: {"net_pl": 0})
 
     def row(description, debit, credit=""):
@@ -314,10 +322,13 @@ def test_own_account_transfers_are_not_spending(tmp_path, monkeypatch):
         "reselling": bundled["reselling"],
     }).lower()
     assert "revolut" not in elsewhere
+    assert isinstance(bundled["counterparties"], list)
+    assert bundled["spending"]["unreviewed"]["count"] == 0
 
 
 def test_refund_reduces_spending_for_the_week(tmp_path, monkeypatch):
     """First Knockout $120 is refunded next morning; the repurchase still counts."""
+    _remember_week_people()
     today = _today()
     yesterday = today - datetime.timedelta(days=1)
     everyday, _savings = _patch_files(monkeypatch, tmp_path)
@@ -344,13 +355,14 @@ def test_refund_reduces_spending_for_the_week(tmp_path, monkeypatch):
     res = _client().get("/finance/spending", headers=AUTH)
     assert res.status_code == 200
     body = res.get_json()
-    assert body["total_spend"] == 150.25
+    assert body["total_spend"] == 185.25
     assert body["by_category"]["Entertainment"] == 134.95
     assert body["by_category"]["Transport"] == 11.70
-    assert body["by_category"]["Other"] == 3.60
+    assert body["by_category"]["Other"] == 38.60
     assert [item["amount"] for item in body["flagged"]] == [120.0]
-    assert body["transfers_net"]["counted"] == 0
-    assert body["transfers_net"]["net"] < 0
+    assert body["unfinished"] is True
+    assert "transfers_net" not in body
+    assert "excluded_transfers" not in body
 
 
 def test_redact_leaves_dates_and_amounts():

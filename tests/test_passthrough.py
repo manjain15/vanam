@@ -1,14 +1,13 @@
-"""Person-to-person transfers are netted, not matched one to one.
+"""Resale is a labelled group, not a payment rail.
 
-The 20–26 Oct 2026 week had about $10,993 of Osko withdrawals covered by
-larger sale-proceeds deposits on the same everyday account. Card purchases
-stay. Only a positive net remainder is spending. A manual rule can force
-one withdrawal to count, or to drop out.
+Buyer deposits for Nilesh's stock land in the everyday account, then the
+proceeds minus commission are forwarded. Only lines labelled resale are
+netted, and only against each other. The leftover is resale income.
+The $26, $7, and $1.70 payments stay in spending either way.
 """
 
 import csv
 import datetime
-import json
 import os
 
 os.environ.setdefault("YOUR_EMAIL", "test@example.com")
@@ -17,22 +16,25 @@ os.environ.setdefault("OPENAI_API_KEY", "test")
 os.environ.setdefault("HEVY_API_KEY", "test")
 os.environ.setdefault("TELEGRAM_BOT_TOKEN", "test")
 
-import pytest
-
 import finance_tracker
 import subscription_audit
 import term_context
-from test_finance_routes import AUTH, _client, _dmy, _patch_files, _today
+from test_finance_routes import AUTH, _client, _dmy, _patch_files, _today, _write_csv
 
 START = datetime.date(2026, 10, 20)
 END = datetime.date(2026, 10, 26)
+FORWARDS = 10993.0
+DEPOSITS = 12000.0
+CARDS = 189.57
+SMALL = 34.70
+SPEND = 224.27
 
 
-@pytest.fixture(autouse=True)
-def _isolated(tmp_path, monkeypatch):
-    monkeypatch.setattr(term_context, "CONTEXT_FILE", tmp_path / "term_context.json")
-    monkeypatch.setattr(
-        finance_tracker, "TRANSFER_OVERRIDES_FILE", tmp_path / "transfer_overrides.json",
+def _remember(name, role="person", aliases=None, large_transfers="ask"):
+    """Save a counterparty into the isolated store."""
+    import counterparties
+    counterparties.upsert_counterparty(
+        name, role, aliases=aliases, large_transfers=large_transfers,
     )
 
 
@@ -51,463 +53,323 @@ def _day(day):
     return datetime.date(2026, 10, day)
 
 
-def _stock_outflows():
-    return [
-        _txn(_day(26), "Osko Withdrawal 26Oct09:19 F40S And R32S", debit=4932),
-        _txn(_day(25), "Osko Withdrawal 25Oct13:01 Ferraris", debit=4061),
-        _txn(_day(25), "Osko Withdrawal 25Oct13:03 American", debit=2000),
-    ]
-
-
 def _cards():
-    """Visa purchases that week, summing to $214.27."""
+    """Visa purchases that week, summing to $189.57."""
     return [
-        _txn(_day(22), "Visa Purchase WOOLWORTHS", debit=84.19),
-        _txn(_day(23), "Visa Purchase COLES", debit=40),
-        _txn(_day(24), "Visa Purchase UBER TRIP", debit=90.08),
+        _txn(_day(22), "Visa Purchase Woolworths Sydney", debit=100),
+        _txn(_day(23), "Visa Purchase Coles Sydney", debit=50),
+        _txn(_day(24), "Visa Purchase Uber Trip Sydney", debit=39.57),
     ]
 
 
-def _hot_wheels():
-    return _txn(_day(21), "Osko Withdrawal 21Oct Change For Hot Wheels W Tynan", debit=10)
-
-
-def _uneven_deposits():
-    """Larger than the withdrawals, and not by one fixed gap."""
+def _small_oskos():
+    """Real payments to people. They are not part of the resale."""
     return [
-        _txn(_day(26), "Osko Deposit 26Oct09:01 Buyer F40", credit=5200),
-        _txn(_day(24), "Osko Deposit 24Oct Card Sale", credit=4510),
-        _txn(_day(25), "Osko Deposit 25Oct10:00 Friend", credit=2311),
+        _txn(_day(21), "Osko Withdrawal 21Oct Halloween Costume Ada Costume", debit=26),
+        _txn(_day(22), "Osko Withdrawal 22Oct Split Sam Seven", debit=7),
+        _txn(_day(23), "Osko Withdrawal 23Oct Split Lee Cent", debit=1.70),
     ]
 
 
-def _summary(txns, extra_inflows=None):
-    kwargs = {}
-    if extra_inflows is not None:
-        kwargs["extra_inflows"] = extra_inflows
-    return finance_tracker.summarise_spending(txns, START, END, 75, **kwargs)
-
-
-def _write_overrides(tmp_path, rules):
-    (tmp_path / "transfer_overrides.json").write_text(json.dumps({"rules": rules}))
-
-
-def test_larger_uneven_deposits_leave_the_card_spend_and_a_negative_net():
-    txns = _stock_outflows() + _cards() + [_hot_wheels()] + _uneven_deposits()
-    summary = _summary(txns, extra_inflows=[])
-    # The $10 Hot Wheels line is itself an Osko, so it sits in the net.
-    assert summary["total_spend"] == 214.27
-    assert summary["by_category"]["Food & dining"] == 124.19
-    assert summary["by_category"]["Transport"] == 90.08
-    assert "Other" not in summary["by_category"]
-    net = summary["transfers_net"]
-    assert net["in"] == 12021
-    assert net["out"] == 11003
-    assert net["carry_in"] == 0
-    assert net["net"] == -1018
-    assert net["counted"] == 0
-    excluded = summary["excluded_transfers"]
-    assert excluded["count"] == 4
-    assert excluded["total"] == 11003
-    assert {item["amount"] for item in excluded["items"]} == {4932, 4061, 2000, 10}
-    flagged = {row["amount"] for row in summary["flagged"]}
-    assert flagged == {90.08, 84.19}
-    assert 4932 not in flagged
-
-
-def test_marking_the_small_osko_as_spending_leaves_224_27(tmp_path):
-    _write_overrides(tmp_path, [{
-        "date": "2026-10-21",
-        "amount": 10,
-        "description": "Hot Wheels",
-        "treat": "spending",
-    }])
-    txns = _stock_outflows() + _cards() + [_hot_wheels()] + _uneven_deposits()
-    summary = _summary(txns, extra_inflows=[])
-    assert summary["total_spend"] == 224.27
-    assert summary["by_category"]["Other"] == 10
-    assert summary["transfers_net"]["out"] == 10993
-    assert summary["transfers_net"]["counted"] == 0
-    assert summary["transfers_net"]["net"] < 0
-    assert summary["excluded_transfers"]["total"] == 10993
-    assert summary["excluded_transfers"]["count"] == 3
-
-
-def test_one_larger_deposit_covers_the_three_withdrawals():
-    txns = _stock_outflows() + [
-        _txn(_day(24), "Osko Deposit 24Oct Auction House", credit=12000),
-        _txn(_day(22), "Visa Purchase COLES", debit=22.50),
+def _forwards():
+    return [
+        _txn(_day(26), "Osko Withdrawal 26Oct09:19 F40S Nilesh Banga", debit=4932),
+        _txn(_day(25), "Osko Withdrawal 25Oct13:01 Ferraris Nilesh Banga", debit=4061),
+        _txn(_day(25), "Osko Withdrawal 25Oct13:03 American Nilesh Banga", debit=2000),
     ]
-    summary = _summary(txns, extra_inflows=[])
-    assert summary["total_spend"] == 22.50
-    assert summary["transfers_net"]["in"] == 12000
-    assert summary["transfers_net"]["out"] == 10993
-    assert summary["transfers_net"]["net"] == -1007
-    assert summary["transfers_net"]["counted"] == 0
-    assert summary["excluded_transfers"]["count"] == 3
-    assert summary["excluded_transfers"]["total"] == 10993
-    assert summary["flagged"] == []
 
 
-def test_several_deposits_cover_one_withdrawal():
-    txns = [
-        _txn(_day(24), "Osko Deposit 24Oct Part A", credit=3000),
-        _txn(_day(24), "Osko Deposit 24Oct Part B", credit=1932),
-        _txn(_day(25), "Osko Withdrawal 25Oct13:01 Ferraris", debit=4932),
-        _txn(_day(25), "Visa Purchase COLES", debit=12.50),
-    ]
-    summary = _summary(txns, extra_inflows=[])
-    assert summary["total_spend"] == 12.50
-    assert summary["transfers_net"]["net"] == 0
-    assert summary["transfers_net"]["counted"] == 0
-    assert summary["excluded_transfers"] == {
-        "count": 1,
-        "total": 4932,
-        "items": [{
-            "date": "2026-10-25",
-            "amount": 4932,
-            "description": "Osko Withdrawal 25Oct13:01 Ferraris",
-        }],
+def _deposits(amounts=(5200, 4300, 2500)):
+    """Buyer money that landed before it was forwarded. Default leftover $1,007."""
+    labels = ("Buyer F40", "Ferraris Buyer", "American Buyer")
+    rows = []
+    for day, amount, label in zip((26, 25, 24), amounts, labels):
+        rows.append(_txn(
+            _day(day), f"Osko Deposit {day}Oct {label}", credit=amount,
+        ))
+    return rows
+
+
+def _remember_people():
+    _remember("Nilesh Banga")
+    _remember("Ada Costume")
+    _remember("Sam Seven")
+    _remember("Lee Cent")
+
+
+def _week(amounts=(5200, 4300, 2500)):
+    _remember_people()
+    return _cards() + _small_oskos() + _forwards() + _deposits(amounts)
+
+
+def _summary(txns):
+    return finance_tracker.summarise_spending(txns, START, END, 75)
+
+
+def test_unlabelled_resale_stays_unreviewed_and_small_oskos_count():
+    summary = _summary(_week())
+    assert summary["total_spend"] == SPEND
+    assert summary["by_category"]["Food & dining"] == 150
+    assert summary["by_category"]["Transport"] == 39.57
+    assert summary["by_category"]["Other"] == SMALL
+    assert summary["unfinished"] is True
+    assert summary["resale"] == {
+        "in": 0.0, "out": 0.0, "net": 0.0, "income": 0.0, "count": 0,
     }
+    assert summary["income"] == []
+    amounts = {(item["amount"], item["direction"]) for item in summary["unreviewed"]["items"]}
+    assert amounts == {
+        (4932.0, "out"), (4061.0, "out"), (2000.0, "out"),
+        (5200.0, "in"), (4300.0, "in"), (2500.0, "in"),
+    }
+    assert all(item["suggestion"] == "resale" for item in summary["unreviewed"]["items"])
+    assert 26 not in {item["amount"] for item in summary["unreviewed"]["items"]}
+    assert FORWARDS not in {row["amount"] for row in summary["flagged"]}
 
 
-def test_positive_remainder_counts_and_does_not_shrink_card_spend():
-    txns = [
-        _txn(_day(24), "Osko Deposit 24Oct Buyer", credit=1100),
-        _txn(_day(25), "Osko Withdrawal 25Oct Ferraris", debit=1000),
-        _txn(_day(25), "Sct Withdrawal 25Oct American", debit=400),
-        _txn(_day(25), "Visa Purchase COLES", debit=22.50),
+def test_accepting_the_suggestion_nets_only_the_resale_lines():
+    import counterparties
+    txns = _week()
+    labelled = counterparties.accept_resale(txns, START, END)
+    assert labelled == 6
+    summary = _summary(txns)
+    assert summary["total_spend"] == SPEND
+    assert summary["by_category"]["Other"] == SMALL
+    assert summary["unfinished"] is False
+    assert summary["unreviewed"]["count"] == 0
+    assert summary["resale"]["in"] == DEPOSITS
+    assert summary["resale"]["out"] == FORWARDS
+    assert summary["resale"]["net"] == 1007
+    assert summary["resale"]["income"] == 1007
+    assert summary["income"] == [{
+        "date": END.isoformat(),
+        "description": "Resale commission",
+        "amount": 1007,
+        "source": "Resale",
+    }]
+
+
+def test_resale_leftover_below_zero_is_not_negative_spending():
+    import counterparties
+    txns = _week(amounts=(4000, 4000, 2000))
+    assert counterparties.accept_resale(txns, START, END) == 6
+    summary = _summary(txns)
+    assert summary["total_spend"] == SPEND
+    assert summary["resale"]["net"] == round(10000 - FORWARDS, 2)
+    assert summary["resale"]["income"] == 0
+    assert summary["income"] == []
+
+
+def test_a_lone_forward_is_unreviewed_and_not_silently_netted():
+    _remember("Nilesh Banga")
+    _remember("Ada Costume")
+    txns = _cards() + [
+        _txn(_day(21), "Osko Withdrawal 21Oct Halloween Costume Ada Costume", debit=26),
+        _txn(_day(26), "Osko Withdrawal 26Oct09:19 F40S Nilesh Banga", debit=4932),
     ]
-    summary = _summary(txns, extra_inflows=[])
-    assert summary["transfers_net"]["in"] == 1100
-    assert summary["transfers_net"]["out"] == 1400
-    assert summary["transfers_net"]["net"] == 300
-    assert summary["transfers_net"]["counted"] == 300
-    assert summary["by_category"]["Food & dining"] == 22.50
-    assert summary["by_category"]["Other"] == 300
-    assert summary["total_spend"] == 322.50
-    assert summary["excluded_transfers"]["total"] == 1100
-    assert {item["amount"] for item in summary["excluded_transfers"]["items"]} == {1000, 400}
-    assert all(row["description"] != "Osko Withdrawal 25Oct Ferraris" for row in summary["flagged"])
+    summary = _summary(txns)
+    assert summary["total_spend"] == round(CARDS + 26, 2)
+    assert summary["unfinished"] is True
+    assert summary["resale"]["count"] == 0
+    item = summary["unreviewed"]["items"][0]
+    assert item["amount"] == 4932
+    assert item["suggestion"] is None
 
 
-def test_negative_net_does_not_reduce_card_spend():
-    txns = [
-        _txn(_day(24), "Osko Deposit 24Oct Buyer", credit=5000),
-        _txn(_day(25), "Osko Withdrawal 25Oct Ferraris", debit=100),
-        _txn(_day(25), "Visa Purchase COLES", debit=40),
+def test_a_large_deposit_is_not_personal_income():
+    txns = _cards() + [
+        _txn(_day(24), "Osko Deposit 24Oct Buyer F40", credit=5200),
     ]
-    summary = _summary(txns, extra_inflows=[])
-    assert summary["total_spend"] == 40
-    assert summary["transfers_net"]["net"] == -4900
-    assert summary["transfers_net"]["counted"] == 0
-    assert summary["by_category"] == {"Food & dining": 40}
+    summary = _summary(txns)
+    assert summary["total_spend"] == CARDS
+    assert summary["income"] == []
+    assert summary["unreviewed"]["items"][0]["amount"] == 5200
+    assert summary["unreviewed"]["items"][0]["suggestion"] is None
 
 
-def test_card_bpay_and_categorised_osko_stay():
+def test_week_of_12_oct_is_unchanged_by_an_unrelated_deposit():
+    start = datetime.date(2026, 10, 12)
+    end = datetime.date(2026, 10, 18)
     txns = [
-        _txn(_day(24), "Osko Deposit 24Oct Someone", credit=120),
-        _txn(_day(25), "Osko Withdrawal 25Oct Knockout R Jaiswal", debit=120),
-        _txn(_day(24), "Osko Deposit 24Oct Groceries", credit=50),
-        _txn(_day(25), "Visa Purchase WOOLWORTHS", debit=50),
-        _txn(_day(24), "Sct Deposit 24Oct Sent From Revolut Manav Jain", credit=4932),
-        _txn(_day(25), "Osko Withdrawal 25Oct13:01 Ferraris", debit=4932),
-        _txn(_day(24), "Osko Deposit 24Oct Propwealth Salary", credit=4061),
-        _txn(_day(25), "Osko Withdrawal 25Oct13:03 American", debit=4061),
-        _txn(_day(25), "BPAY Energy Australia", debit=60),
-        _txn(_day(25), "Direct Debit Council Rates", debit=15.99),
-        _txn(_day(27), "Osko Deposit 27Oct After The Window", credit=9000),
+        _txn(datetime.date(2026, 10, 14), "Visa Purchase Knockout Tickets", debit=42.99),
+        _txn(datetime.date(2026, 10, 15), "Visa Purchase Misc Bits", debit=29),
+        _txn(datetime.date(2026, 10, 16), "Visa Purchase Tfnsw Opal", debit=12.95),
+        _txn(datetime.date(2026, 10, 17), "Osko Deposit 17Oct Mystery Payer", credit=8000),
     ]
-    summary = _summary(txns, extra_inflows=[])
-    assert summary["by_category"]["Entertainment"] == 120
-    assert summary["by_category"]["Food & dining"] == 50
-    assert summary["by_category"]["Other"] == round(60 + 15.99 + 8823, 2)
-    # Someone + groceries are inflows. Salary, the Revolut move, and the
-    # deposit after the window are not. Both Oskos are outflows.
-    assert summary["transfers_net"]["in"] == 170
-    assert summary["transfers_net"]["out"] == 8993
-    assert summary["transfers_net"]["counted"] == 8823
-    assert summary["total_spend"] == 120 + 50 + 60 + 15.99 + 8823
+    summary = finance_tracker.summarise_spending(txns, start, end, 75)
+    assert summary["total_spend"] == 84.94
+    assert summary["by_category"]["Entertainment"] == 42.99
+    assert summary["by_category"]["Other"] == 29
+    assert summary["by_category"]["Transport"] == 12.95
+    assert summary["income"] == []
+    assert summary["unfinished"] is True
+    assert summary["unreviewed"]["total_in"] == 8000
 
 
-def test_a_later_deposit_inside_the_window_does_reduce_the_net():
-    outflow = _txn(_day(25), "Osko Withdrawal 25Oct13:04 American", debit=2000)
-    later = _txn(_day(26), "Osko Deposit 26Oct Later", credit=2000)
-    summary = _summary([outflow, later], extra_inflows=[])
+def test_partial_reimbursement_does_not_need_matching_amounts():
+    _remember("R Jaiswal", aliases=["rishi jaiswal"])
+    day = datetime.date(2026, 9, 22)
+    txns = [
+        _txn(day, "Osko Withdrawal 22Sep18:35 Knockout R Jaiswal", debit=120),
+        _txn(datetime.date(2026, 9, 23), "Sct Deposit 23Sep09:11 Rishi Jaiswal", credit=50),
+    ]
+    summary = finance_tracker.summarise_spending(txns, day, datetime.date(2026, 9, 28), 75)
+    assert summary["total_spend"] == 70
+    assert summary["income"] == []
+
+
+def test_a_credit_larger_than_the_debit_is_income():
+    _remember("R Jaiswal", aliases=["rishi jaiswal"])
+    day = datetime.date(2026, 9, 22)
+    txns = [
+        _txn(day, "Osko Withdrawal 22Sep18:35 Knockout R Jaiswal", debit=120),
+        _txn(datetime.date(2026, 9, 23), "Sct Deposit 23Sep09:11 Rishi Jaiswal", credit=200),
+    ]
+    summary = finance_tracker.summarise_spending(txns, day, datetime.date(2026, 9, 28), 75)
     assert summary["total_spend"] == 0
-    assert summary["transfers_net"]["net"] == 0
-    assert summary["transfers_net"]["counted"] == 0
+    assert summary["income"][0]["amount"] == 80
+    assert summary["income"][0]["source"] == "R Jaiswal"
 
 
-def test_carry_uses_unused_inflow_and_not_a_deposit_already_spent(tmp_path):
-    outflow = _txn(_day(26), "Osko Withdrawal 26Oct Ferraris", debit=4932)
-    too_old = _txn(_day(12), "Osko Deposit 12Oct Buyer", credit=4932)
-    on_the_edge = _txn(_day(13), "Osko Deposit 13Oct Buyer", credit=4932)
-    day_before = _txn(_day(19), "Osko Deposit 19Oct Buyer", credit=4932)
-    already_spent = _txn(_day(14), "Osko Withdrawal 14Oct Ferraris", debit=4932)
-
-    outside = _summary([outflow, too_old], extra_inflows=[])
-    assert outside["total_spend"] == 4932
-    assert outside["transfers_net"]["carry_in"] == 0
-    assert outside["excluded_transfers"]["count"] == 0
-
-    carried = _summary([outflow, on_the_edge], extra_inflows=[])
-    assert carried["total_spend"] == 0
-    assert carried["transfers_net"]["carry_in"] == 4932
-    assert carried["transfers_net"]["counted"] == 0
-
-    consumed = _summary([outflow, on_the_edge, already_spent], extra_inflows=[])
-    assert consumed["total_spend"] == 4932
-    assert consumed["transfers_net"]["carry_in"] == 0
-
-    (tmp_path / "term_context.json").write_text(json.dumps({
-        "spending": {"transfer_carry_days": 0},
-    }))
-    disabled = _summary([outflow, day_before], extra_inflows=[])
-    assert disabled["total_spend"] == 4932
-    assert disabled["transfers_net"]["carry_in"] == 0
-    assert finance_tracker.get_transfer_carry_days() == 0
-
-    (tmp_path / "term_context.json").write_text(json.dumps({
-        "spending": {"transfer_carry_days": 14},
-    }))
-    wider = _summary([outflow, too_old], extra_inflows=[])
-    assert wider["total_spend"] == 0
-    assert wider["transfers_net"]["carry_in"] == 4932
-
-    (tmp_path / "term_context.json").write_text(json.dumps({
-        "spending": {"transfer_carry_days": 99},
-    }))
-    assert finance_tracker.get_transfer_carry_days() == 7
+def test_a_small_gift_with_nothing_to_reimburse_is_income():
+    _remember("Nilesh Banga")
+    day = datetime.date(2026, 10, 20)
+    txns = [_txn(day, "Osko Deposit 20Oct Nilesh Banga", credit=40)]
+    summary = finance_tracker.summarise_spending(txns, day, END, 75)
+    assert summary["total_spend"] == 0
+    assert summary["unfinished"] is False
+    assert summary["income"][0]["amount"] == 40
 
 
-def test_salary_and_own_account_moves_are_not_in_the_net():
-    txns = [
-        _txn(_day(24), "Osko Deposit 24Oct Buyer", credit=500),
-        _txn(_day(25), "Osko Withdrawal 25Oct Manav Jain", debit=500),
-        _txn(_day(25), "Internet Withdrawal To savings", debit=40),
-        _txn(_day(24), "Direct Credit 24Oct Employer Pty Ltd", credit=80),
-        _txn(_day(25), "Osko Withdrawal 25Oct Landlord", debit=80),
-        _txn(_day(25), "Visa Purchase COLES", debit=8),
-    ]
-    summary = _summary(txns, extra_inflows=[])
-    # The $500 buyer deposit covers the $80 landlord Osko. The direct
-    # credit does not. The payment to himself is not in the net or the spend.
-    assert summary["total_spend"] == 8
-    assert summary["transfers_net"]["in"] == 500
-    assert summary["transfers_net"]["out"] == 80
-    assert summary["transfers_net"]["counted"] == 0
-    assert summary["excluded_transfers"]["count"] == 1
-    blob = json.dumps(summary["excluded_transfers"]).lower()
-    assert "manav" not in blob
-    assert "revolut" not in blob
+def test_a_large_unlabelled_credit_is_unreviewed():
+    _remember("Nilesh Banga")
+    day = datetime.date(2026, 10, 20)
+    txns = [_txn(day, "Osko Deposit 20Oct Nilesh Banga", credit=900)]
+    summary = finance_tracker.summarise_spending(txns, day, END, 75)
+    assert summary["income"] == []
+    assert summary["total_spend"] == 0
+    assert summary["unfinished"] is True
+    assert summary["unreviewed"]["items"][0]["amount"] == 900
 
 
-def test_override_can_force_spending_or_pass_through(tmp_path):
-    _write_overrides(tmp_path, [
-        {
-            "date": "2026-10-25",
-            "amount": 80,
-            "description": "landlord",
-            "treat": "spending",
-        },
-        {
-            "date": "2026-10-26",
-            "amount": 40,
-            "description": "Corner Lane",
-            "treat": "pass-through",
-        },
-    ])
-    txns = [
-        _txn(_day(24), "Osko Deposit 24Oct Buyer", credit=500),
-        _txn(_day(25), "Osko Withdrawal 25Oct Landlord", debit=80),
-        _txn(_day(26), "Osko Withdrawal 26Oct Corner Lane", debit=40),
-        _txn(_day(25), "Visa Purchase COLES", debit=8),
-    ]
-    summary = _summary(txns, extra_inflows=[])
-    assert summary["by_category"]["Other"] == 80
-    assert summary["total_spend"] == 88
-    assert summary["transfers_net"]["out"] == 0
-    assert summary["transfers_net"]["counted"] == 0
-    assert summary["excluded_transfers"]["total"] == 40
-    assert summary["excluded_transfers"]["items"][0]["description"].endswith("Corner Lane")
-
-    (tmp_path / "transfer_overrides.json").write_text("not json")
-    broken = _summary(txns, extra_inflows=[])
-    assert broken["total_spend"] == 8
-    assert broken["transfers_net"]["out"] == 120
+def test_large_transfers_can_be_marked_as_ordinary_spending():
+    _remember("S Ahuja", large_transfers="spending")
+    day = datetime.date(2026, 10, 20)
+    txns = [_txn(day, "Osko Withdrawal 20Oct Rent S Ahuja", debit=903.50)]
+    summary = finance_tracker.summarise_spending(txns, day, END, 75)
+    assert summary["total_spend"] == 903.50
+    assert summary["unreviewed"]["count"] == 0
 
 
-def test_a_rule_with_the_wrong_fragment_does_not_match(tmp_path):
-    _write_overrides(tmp_path, [{
-        "date": "2026-10-25",
-        "amount": 80,
-        "description": "someone else",
-        "treat": "pass-through",
-    }])
-    txns = [
-        _txn(_day(25), "Osko Withdrawal 25Oct Landlord", debit=80),
-        _txn(_day(25), "Visa Purchase COLES", debit=8),
-    ]
-    summary = _summary(txns, extra_inflows=[])
-    assert summary["total_spend"] == 88
-
-
-def test_payid_and_npp_are_in_the_net():
-    txns = [
-        _txn(_day(24), "PayID Payment From Buyer", credit=50),
-        _txn(_day(25), "PayID Withdrawal To Alex", debit=80),
-        _txn(_day(25), "NPP Credit Week Split", credit=10),
-        _txn(_day(25), "Visa Purchase COLES", debit=5),
-    ]
-    summary = _summary(txns, extra_inflows=[])
-    assert summary["transfers_net"]["in"] == 60
-    assert summary["transfers_net"]["out"] == 80
-    assert summary["transfers_net"]["counted"] == 20
-    assert summary["total_spend"] == 25
-    assert summary["by_category"]["Food & dining"] == 5
-    assert summary["by_category"]["Other"] == 20
-
-
-def test_a_refund_credit_is_not_also_a_transfer_inflow():
-    txns = [
-        _txn(_day(22), "Osko Withdrawal 22Oct18:35 Knockout R Jaiswal", debit=120),
-        _txn(_day(23), "Sct Deposit 23Oct09:11 Rishi Jaiswal", credit=120),
-        _txn(_day(25), "Osko Withdrawal 25Oct Landlord", debit=120),
-    ]
-    summary = _summary(txns, extra_inflows=[])
-    assert summary["total_spend"] == 120
-    assert summary["by_category"] == {"Other": 120}
-    assert summary["transfers_net"]["in"] == 0
-    assert summary["transfers_net"]["out"] == 120
-    assert summary["transfers_net"]["counted"] == 120
-
-
-def _revolut_file(path, rows):
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow([
-            "State", "Type", "Completed Date", "Description",
-            "Amount", "Fee", "Currency", "Balance",
-        ])
-        writer.writerows(rows)
-
-
-def test_revolut_inflow_does_not_cover_everyday_oskos(tmp_path, monkeypatch):
-    path = tmp_path / "revolut.csv"
-    monkeypatch.setattr(finance_tracker, "REVOLUT_CSV", path)
-    _revolut_file(path, [
-        ["COMPLETED", "TRANSFER", "2026-10-24 15:00:00", "Buyer payout", "10993.00", "0", "AUD", "10993.00"],
-        ["COMPLETED", "CARD_PAYMENT", "2026-10-24 12:00:00", "EB Games", "-15.00", "0", "AUD", "15.00"],
-        ["COMPLETED", "TRANSFER", "2026-10-24 11:00:00", "From Manav Jain", "15.00", "0", "AUD", "30.00"],
-        ["COMPLETED", "TOPUP", "2026-10-24 10:00:00", "Topup", "4932.00", "0", "AUD", "4962.00"],
-        ["COMPLETED", "TRANSFER", "2026-10-25 10:00:00", "Supplier invoice", "-30.00", "0", "AUD", "30.00"],
-    ])
-    txns = _stock_outflows() + [
-        _txn(_day(25), "Osko Withdrawal 25Oct Corner Lane", debit=15),
-        _txn(_day(22), "Visa Purchase COLES", debit=18),
-    ]
-    summary = _summary(txns)
-    assert summary["total_spend"] == 10993 + 15 + 18
-    assert summary["transfers_net"]["in"] == 0
-    assert summary["transfers_net"]["counted"] == 11008
-    assert summary["excluded_transfers"]["count"] == 0
-    reselling = summary["transfers_net"]["reselling"]
-    assert reselling["in"] == 10993
-    assert reselling["out"] == 30
-    assert reselling["net"] == -10963
-    assert reselling["counted"] == 0
-    assert "revolut" not in json.dumps(summary).lower()
-
-
-def test_owner_revolut_transfer_is_not_in_the_reselling_net(tmp_path, monkeypatch):
-    path = tmp_path / "revolut.csv"
-    monkeypatch.setattr(finance_tracker, "REVOLUT_CSV", path)
-    _revolut_file(path, [
-        ["COMPLETED", "TRANSFER", "2026-10-24 15:00:00", "From Manav Jain", "4932.00", "0", "AUD", "4932.00"],
-    ])
-    txns = [
-        _txn(_day(25), "Osko Withdrawal 25Oct13:01 Ferraris", debit=4932),
-        _txn(_day(25), "Visa Purchase COLES", debit=5),
-    ]
-    summary = _summary(txns)
-    assert summary["total_spend"] == 4937
-    assert summary["excluded_transfers"]["count"] == 0
-    assert "reselling" not in summary["transfers_net"]
-    assert "revolut" not in json.dumps(summary).lower()
-    assert "manav" not in json.dumps(summary).lower()
-
-
-def test_finance_route_reports_the_net(tmp_path, monkeypatch):
-    today = _today()
-    yesterday = today - datetime.timedelta(days=1)
-    everyday, _savings = _patch_files(monkeypatch, tmp_path)
-    everyday.parent.mkdir(parents=True, exist_ok=True)
-    with everyday.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["Date", "Description", "Debit", "Credit", "Balance"])
-        writer.writerow([
-            _dmy(yesterday), "Osko Withdrawal 25Oct Ferraris", "200.00", "", "800.00",
-        ])
-        writer.writerow([
-            _dmy(yesterday), "Osko Deposit 25Oct Buyer", "", "200.00", "1000.00",
-        ])
-        writer.writerow([
-            _dmy(today), "Visa Purchase COLES", "30.00", "", "770.00",
-        ])
-    res = _client().get("/finance/spending", headers=AUTH)
-    assert res.status_code == 200
-    body = res.get_json()
-    assert body["total_spend"] == 30
-    assert body["transfers_net"]["in"] == 200
-    assert body["transfers_net"]["out"] == 200
-    assert body["transfers_net"]["net"] == 0
-    assert body["transfers_net"]["counted"] == 0
-    assert body["excluded_transfers"]["count"] == 1
-    assert body["excluded_transfers"]["total"] == 200
-    assert body["flagged"] == []
-    bundle = _client().get("/finance", headers=AUTH).get_json()
-    assert bundle["spending"]["transfers_net"]["counted"] == 0
-    assert bundle["spending"]["excluded_transfers"]["total"] == 200
-    assert bundle["spending"]["total_spend"] == 30
-
-
-def test_s_ahuja_stays_in_the_subscription_review(tmp_path, monkeypatch):
-    """Recurring Osko to S Ahuja stays in the review when spending nets it out.
-
-    The subscription audit does not use the transfer net.
-    """
+def test_repeating_person_is_not_a_subscription(tmp_path, monkeypatch):
     everyday = tmp_path / "everyday.csv"
     monkeypatch.setattr(finance_tracker, "EVERYDAY_CSV", everyday)
-    monkeypatch.setattr(finance_tracker, "REVOLUT_CSV", tmp_path / "revolut.csv")
+    monkeypatch.setattr(term_context, "CONTEXT_FILE", tmp_path / "term_context.json")
+    _remember("S Ahuja")
     today = datetime.datetime.now(subscription_audit.TIMEZONE).date()
     previous = today - datetime.timedelta(days=32)
 
-    def row(day, description, debit="", credit=""):
-        return [day.strftime("%d/%m/%Y"), description, debit, credit, "100.00"]
+    def row(day, description, debit):
+        return (day.strftime("%d/%m/%Y"), description, f"{debit:.2f}", "")
 
-    everyday.parent.mkdir(parents=True, exist_ok=True)
     with everyday.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(["Date", "Description", "Debit", "Credit", "Balance"])
-        writer.writerows([
-            row(today, "Osko Withdrawal S Ahuja", "903.50"),
-            row(today - datetime.timedelta(days=1), "Osko Deposit S Ahuja", "", "903.50"),
-            row(previous, "Osko Withdrawal S Ahuja", "903.50"),
-            row(previous - datetime.timedelta(days=1), "Osko Deposit S Ahuja", "", "903.50"),
-        ])
-    txns = finance_tracker.parse_stgeorge_csv(everyday)
-    summary = finance_tracker.summarise_spending(
-        txns, previous - datetime.timedelta(days=1), today, 75, extra_inflows=[],
-    )
-    assert summary["total_spend"] == 0
-    assert summary["transfers_net"]["in"] == 1807
-    assert summary["transfers_net"]["out"] == 1807
-    assert summary["transfers_net"]["counted"] == 0
-    assert summary["excluded_transfers"]["count"] == 2
-    assert summary["excluded_transfers"]["total"] == 1807
+        for day in (today, previous):
+            writer.writerow([*row(day, "Visa Purchase SPOTIFY P1234", 11.99), "100.00"])
+            writer.writerow([*row(day, "Osko Withdrawal Rent S Ahuja", 903.50), "100.00"])
 
     review = subscription_audit.summarise_subscriptions(months=3)
-    assert review["available"] is True
-    assert any(item["merchant"] == "s ahuja" for item in review["review"])
-    assert review["monthly_review"] == 903.50
+    assert review["monthly_known"] == 11.99
+    assert review["review"] == []
+    assert review["monthly_review"] == 0
+    assert all("ahuja" not in item["merchant"] for item in review["known"])
+
+    txns = finance_tracker.parse_stgeorge_csv(everyday)
+    summary = finance_tracker.summarise_spending(
+        txns, today - datetime.timedelta(days=6), today, 75,
+    )
+    assert summary["total_spend"] == 11.99
+    assert summary["unreviewed"]["total_out"] == 903.50
+
+
+def test_finance_routes_label_resale_in_one_action(tmp_path, monkeypatch):
+    everyday, _savings = _patch_files(monkeypatch, tmp_path)
+    _remember_people()
+    rows = []
+    for txn in _week():
+        rows.append([
+            _dmy(txn["date"]), txn["description"],
+            f"{txn['debit']:.2f}" if txn["debit"] else "",
+            f"{txn['credit']:.2f}" if txn["credit"] else "",
+            "1000.00",
+        ])
+    _write_csv(everyday, rows)
+    client = _client()
+    before = client.get(
+        "/finance/spending?start=2026-10-20&end=2026-10-26", headers=AUTH,
+    ).get_json()
+    assert before["total_spend"] == SPEND
+    assert before["unfinished"] is True
+
+    accepted = client.post(
+        "/finance/resale?start=2026-10-20&end=2026-10-26", headers=AUTH, json={},
+    )
+    assert accepted.status_code == 200
+    assert accepted.get_json()["labelled"] == 6
+
+    after = client.get(
+        "/finance/spending?start=2026-10-20&end=2026-10-26", headers=AUTH,
+    ).get_json()
+    assert after["total_spend"] == SPEND
+    assert after["resale"]["income"] == 1007
+    assert after["unfinished"] is False
+    assert "revolut" not in accepted.get_data(as_text=True).lower()
+
+    saved = client.post("/finance/counterparties", headers=AUTH, json={
+        "name": "Priya Shah", "role": "person",
+    })
+    assert saved.status_code == 200
+    assert saved.get_json()["role"] == "person"
+
+    labelled = client.post("/finance/lines", headers=AUTH, json={
+        "date": "2026-10-21", "amount": 26, "description": "halloween",
+        "purpose": "spending",
+    })
+    assert labelled.status_code == 200
+    assert labelled.get_json()["purpose"] == "spending"
+
+    bundle = client.get("/finance?start=2026-10-20&end=2026-10-26", headers=AUTH)
+    names = [row["name"] for row in bundle.get_json()["counterparties"]]
+    assert "Priya Shah" in names
+    assert "Nilesh Banga" in names
+
+
+def test_telegram_lists_and_accepts_the_same_resale_group(tmp_path, monkeypatch):
+    import jarvis_telegram
+    everyday = tmp_path / "everyday.csv"
+    monkeypatch.setattr(finance_tracker, "EVERYDAY_CSV", everyday)
+    today = _today()
+    _remember("Nilesh Banga")
+    _remember("Ada Costume")
+    _write_csv(everyday, [
+        [_dmy(today), "Osko Deposit Buyer F40", "", "5200.00", "1000.00"],
+        [_dmy(today), "Osko Withdrawal F40S Nilesh Banga", "4932.00", "", "1000.00"],
+        [_dmy(today), "Osko Withdrawal Halloween Costume Ada Costume", "26.00", "", "1000.00"],
+        [_dmy(today), "Visa Purchase Woolworths Sydney", "10.00", "", "1000.00"],
+    ])
+    listed = jarvis_telegram.cmd_unreviewed([])
+    assert "unfinished" in listed
+    assert "5200.00" in listed
+    assert "4932.00" in listed
+    assert "suggest resale" in listed
+    assert "26.00" not in listed
+
+    assert "resale" in jarvis_telegram.cmd_resale([]).lower()
+    again = jarvis_telegram.cmd_unreviewed([])
+    assert again.startswith("Nothing unreviewed")
+
+    who = jarvis_telegram.handle_command('/who "Sam Seven" person')
+    assert "Sam Seven" in who
+    labelled = jarvis_telegram.handle_command("/label 2026-10-21 26 halloween spending")
+    assert "spending" in labelled

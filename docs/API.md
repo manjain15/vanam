@@ -227,7 +227,7 @@ curl -sS -H "Authorization: Bearer $JARVIS_API_TOKEN" \
 `kind` is `morning` or `weekly`. `html` is the body that was emailed. `text`
 is the same content with tags removed.
 
-### Finance (read-only)
+### Finance
 
 For the weekly Money check. No Anthropic call. `GET /finance` returns every
 section below in one response; a section that throws is
@@ -260,69 +260,79 @@ curl -sS -H "Authorization: Bearer $JARVIS_API_TOKEN" \
   "https://<your-host>/finance/spending?start=2026-09-22&end=2026-09-28"
 ```
 
-`by_category` is everyday-account debit totals. Excluded, in the morning brief
-as well: internet withdrawals, transfers, Osko/Sct withdrawals whose payee is
-an owner name, and card top-ups of an own account (Revolut**5228). Names and
-card patterns default to Manav Jain / Revolut and can be overridden under
-`own_accounts` in `term_context.json`. A later credit reduces a debit when it
-is the same amount or smaller, the payee matches (surname plus a given name
-or initial, or a merchant card refund of the same shop), and it lands within
-`spending.refund_window_days` (default 14). Each debit is offset once.
-Salary, reselling payouts, friend deposits, and transfers from his own
-accounts are not refunds. `weekly_budget`
-is the `exchange_target` weekly budget ($75 unless `term_context.json` says
-otherwise). `budget_for_range` prorates that budget by `days / 7`.
-`weekly_equivalent` is spend scaled to a 7-day week. `over_budget` compares
-`total_spend` with `budget_for_range`.
+`by_category` is everyday-account spending. Own-account moves are left out:
+internet withdrawal and deposit, transfer to or from savings, Osko/Sct to
+an owner name, and a Revolut card top-up (`Revolut**5228`, or a bare
+`revolut` on a card rail). The bare word `transfer` is not enough. Names
+and card patterns default to Manav Jain / Revolut and can be overridden
+under `own_accounts` in `term_context.json`.
+
+A card, BPAY, or direct debit counts as spending even when the shop is new.
+An Osko, Sct, PayID, or NPP line does not, until Vanam knows who it was
+with. A known person: money out is spending, and money in reduces earlier
+spending with that same person inside `spending.refund_window_days`
+(default 14). The amounts do not have to match. What the credit does not
+use is income. It cannot push spending below zero, and it cannot reduce a
+later payment. A transfer of $500 or more stays on `unreviewed` until that
+line is labelled, unless that person's `large_transfers` is `spending`.
+
+`unreviewed` lists those waiting lines (`count`, `total`, `total_in`,
+`total_out`, `items`). `unfinished` is true while the list is not empty.
+Those lines are not in `total_spend` and they do not cancel anything else.
+`resale` is only the lines labelled resale: `in`, `out`, `net`, `income`
+(`max(net, 0)`), `count`. The leftover is also on `income` with source
+`Resale`. A negative net is not negative spending. Buyer deposits are not
+personal income until they are in that group.
 
 `flagged` lists up to four debits of $80 or more (`date`, `amount`,
 `category`, redacted `description`). When the window includes today, `live`
 is the Back Tap total for that span (category totals and an unmatched count,
-not the raw notes).
+not the raw notes). `weekly_budget` is the `exchange_target` weekly budget
+($75 unless `term_context.json` says otherwise). `budget_for_range` prorates
+that budget by `days / 7`. `weekly_equivalent` is spend scaled to a 7-day
+week. `over_budget` compares `total_spend` with `budget_for_range`.
 
-`transfers_net` is the person-to-person total on the everyday account for
-this window. `in` is Osko, Sct, PayID, and NPP deposits. `out` is the
-matching withdrawals that are still uncategorised (a ticket or a shop
-coded to a real category is spending, not part of `out`). `carry_in` is
-inflow left over from the previous `spending.transfer_carry_days` days
-(default 7, range 0–30; 0 turns the lookback off) after that lookback's
-own withdrawals have been subtracted. `net` is `out - in - carry_in` and
-may be negative. `counted` is `max(net, 0)`. Only `counted` is added to
-`total_spend`, as Other. A negative net does not reduce card purchases,
-direct debits, or BPAY.
+`GET /finance` adds `counterparties`: id, name, role (`merchant` or
+`person`), `subscription`, `large_transfers`. Aliases stay in the file.
+Shops from the category list are already there. A person is never a
+subscription just because the payment repeats.
 
-Salary, payroll, direct credits, tutoring, identified pokemon-sale income,
-and refund credits are not part of `in`, so pay does not cancel a
-withdrawal. A credit already used as a refund is not used again.
-Own-account moves (internet withdrawals, lines described as a transfer,
-Osko/Sct to an owner name, Revolut card top-ups) stay out of spending and
-out of the net. External Revolut transfers are a different account: they
-are netted under `transfers_net.reselling` (same fields) and that
-`counted` is not added to `total_spend`. The older
-`spending.passthrough_window_days`, `passthrough_tolerance`, and
-`passthrough_max_group` settings are no longer read.
+Osko descriptions in this payload have the last two words redacted. Label
+from a fragment that is still visible (the reference, not only the payee),
+or use Telegram, which shows the bank text.
 
-`excluded_transfers` lists the withdrawals that were not counted at their
-own amount (`count`, `total`, `items` with `date`, `amount`, redacted
-`description`). `total` is the dollars kept out of spending. When the
-whole pool was covered, `total` equals the sum of `items`.
+```
+curl -sS -H "Authorization: Bearer $JARVIS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Nilesh Banga","role":"person","aliases":["nilesh"]}' \
+  https://<your-host>/finance/counterparties
 
-To force one line, edit `data/transfer_overrides.json` on the VPS
-(`/home/jarvis/jarvis/data/transfer_overrides.json`). The agent reads it
-on the next request; a restart is not required. `data/` is not in git.
+curl -sS -H "Authorization: Bearer $JARVIS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"date":"2026-10-26","amount":4932,"description":"F40S","purpose":"resale","direction":"out"}' \
+  https://<your-host>/finance/lines
 
-```json
-{
-  "rules": [
-    {"date": "2026-10-25", "amount": 80.00, "description": "Landlord", "treat": "spending"},
-    {"date": "2026-10-26", "amount": 4932.00, "description": "F40S", "treat": "pass-through"}
-  ]
-}
+curl -sS -H "Authorization: Bearer $JARVIS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{}' \
+  "https://<your-host>/finance/resale?start=2026-10-20&end=2026-10-26"
 ```
 
-`treat` `spending` counts that withdrawal in full and leaves it out of the
-net. `treat` `pass-through` drops it even when the net would have counted
-it. Date, amount to the cent, and a description fragment all have to match.
+`purpose` is `resale`, `spending`, or `income` (`pass-through` is accepted
+as `resale`). `POST /finance/resale` labels every suggested line in the
+window: a large unexplained deposit and a large forward in the same window,
+or a line within a dollar of a sheet sale or cost. One action. Card spend
+and small payments are not suggested. The sheet is only a hint.
+
+The same answers can be written by editing `data/counterparties.json` on
+the VPS (`/home/jarvis/jarvis/data/counterparties.json`). It is read on the
+next request. A restart is not required to label. `data/` is not in git.
+Telegram: `/unreviewed`, `/who "Nilesh Banga" person`, `/label 2026-10-26
+4932 F40S resale`, `/resale`. `/who ... large` sets `large_transfers` to
+`spending`.
+
+`data/transfer_overrides.json` is no longer read. There is no rail-wide
+net and no carry from the previous week.
 
 #### Savings
 

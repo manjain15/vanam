@@ -28,3 +28,14 @@ def _no_real_google_health(monkeypatch):
     def _offline():
         raise RuntimeError("Google Health is not reachable in tests")
     monkeypatch.setattr(google_health, "get_access_token", _offline)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_counterparties(tmp_path, monkeypatch):
+    """Spending tests never read or write the real counterparty file."""
+    try:
+        import counterparties
+    except Exception:
+        return
+    monkeypatch.setattr(counterparties, "STORE_PATH", tmp_path / "counterparties.json")
+    monkeypatch.setattr(counterparties, "_sheet_amounts", lambda: set())
