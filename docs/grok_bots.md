@@ -164,26 +164,17 @@ Routes: GET /finance and /finance/*, POST /spend, GET /flags, GET /today.
   pending); everyday_ledger is the posted balance. pct, remaining,
   on_track and projected_date use that total. breakdown.savings is the
   savings account alone. A null component was not read.
-  spending.unreviewed is transfers not in the total. unfinished is true
-  while that list has anything on it. Do not treat the total as the
-  whole week when unfinished is true. spending.resale is only lines labelled resale. in and out are the
-  bank totals and stay out of personal spending. net is in minus out,
-  for checking the lines. income is the sheet commission (a sold row
-  whose name contains "commission"), not in minus out. income is null
-  when the sheet was not read. difference.not_in_week is the part of
-  the sheet figure that is not in this week's bank lines. That gap is
-  normal when a resale spans weeks. It is not an error and it is not
-  money owed. Do not ask for a wider window. Do not add that commission on top of
-  reselling.inventory.net_pl. inventory.commission is the sheet total
-  kept out of net_pl. A buyer deposit is not personal income, and a
-  large forward is not spending, until both are labelled. Card spend
-  and small payments to people are separate. counterparties on the
-  same payload lists role, subscription, and large_transfers.
-  To label: POST /finance/counterparties, POST /finance/lines, or
-  POST /finance/resale (accepts the suggestion for the window).
-  unreviewed.items[].payee is the name GET /finance otherwise hides.
-  Do not send [redacted] as a description fragment. A line label that
-  matches nothing is a 400 and nothing is saved. The date in the bank
-  text (25Oct) counts as well as the posted date. Spending is refused
-  on money coming in. data/transfer_overrides.json is not read.
+  spending.total_spend is card, BPAY and direct debit lines (net of
+  card refunds) plus every spend logged with POST /spend or the Back
+  Tap shortcut. Logged spends count in full in the category given;
+  spending.logged says how much of the total they are. Transfers (Osko,
+  Sct, PayID, NPP) never count as spending or income.
+  spending.transfers lists them with counted false; mention the totals
+  only as "not counted". If Manav paid for something by transfer and it
+  is not in the total, ask him to log it with POST /spend. Do not add
+  transfers to the total yourself.
+  spending.commission.total is the reselling sheet commission for rows
+  dated in the window (null when the sheet was not read). It is income,
+  not spending. Do not add it on top of reselling.inventory.net_pl;
+  inventory.commission is the same figure kept out of net_pl.
 ```

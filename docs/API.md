@@ -267,89 +267,48 @@ an owner name, and a Revolut card top-up (`Revolut**5228`, or a bare
 and card patterns default to Manav Jain / Revolut and can be overridden
 under `own_accounts` in `term_context.json`.
 
-A card, BPAY, or direct debit counts as spending even when the shop is new.
-An Osko, Sct, PayID, or NPP line does not, until Vanam knows who it was
-with. A known person: money out is spending, and money in reduces earlier
-spending with that same person inside `spending.refund_window_days`
-(default 14). The amounts do not have to match. What the credit does not
-use is income. It cannot push spending below zero, and it cannot reduce a
-later payment. A transfer of $500 or more stays on `unreviewed` until that
-line is labelled, unless that person's `large_transfers` is `spending`.
+The weekly rule:
 
-`unreviewed` lists those waiting lines (`count`, `total`, `total_in`,
-`total_out`, `items`). `unfinished` is true while the list is not empty.
-Those lines are not in `total_spend` and they do not cancel anything else.
-`resale` is the lines labelled resale. `in` and `out` are the bank totals
-for that group, and `net` is `in` minus `out`, kept so the lines can be
-checked. Those lines are left out of `total_spend`. They are not income.
-`income` is the commission from the reselling sheet (`manj`, tab `general`):
-a sold row whose name contains "commission". The amount is that row's Net
-P/L. A sale price that is not the same number is the stock sold, and
-`difference.due` is sold minus commission. `difference.forwarded` is the
-bank `out` inside this window. `difference.not_in_week` is due minus
-forwarded: the part that is not in this week's bank lines. A weekly gap
-is expected, because a resale can span weeks. It is not an error and it
-is not money owed. The window is not widened to close it. `note` says
-that in those words. `income` is null when the sheet could not be read. It is not the bank
-residual. The same commission is omitted from `reselling.inventory.net_pl`,
-which reports it once as `commission`.
+1. Card, BPAY, and direct debit lines count, in their category. So do
+   other debits that are not transfers, such as bank fees. A card refund
+   (Visa refund, reversal, chargeback, Visa or EFTPOS credit) reduces an
+   earlier card purchase at the same merchant inside
+   `spending.refund_window_days` (default 14). The amounts do not have to
+   match. A refund cannot push spending below zero, cannot reduce a later
+   purchase, and is never income.
+2. Transfers (Osko, Sct, PayID, NPP, or a line that says `transfer`, in
+   or out) never count as spending and never count as income.
+3. Spends logged with the Back Tap shortcut (`POST /spend`, stored in
+   `data/live_spend.jsonl`) count in full, in the category given, when
+   their date is inside the window. They are transfer purchases, which
+   never appear as card lines, so there is no duplicate check.
 
-`flagged` lists up to four debits of $80 or more (`date`, `amount`,
-`category`, redacted `description`). When the window includes today, `live`
-is the Back Tap total for that span (category totals and an unmatched count,
-not the raw notes). `weekly_budget` is the `exchange_target` weekly budget
-($75 unless `term_context.json` says otherwise). `budget_for_range` prorates
-that budget by `days / 7`. `weekly_equivalent` is spend scaled to a 7-day
-week. `over_budget` compares `total_spend` with `budget_for_range`.
+`transfers` lists the transfers in the window for reference: `counted`
+(always false), `count`, `total_in`, `total_out`, and `items` (`date`,
+`amount`, `direction`, redacted `description`). Own-account moves are not
+on it. `logged` is how much of `total_spend` came from Back Tap entries
+(`count`, `total`). `income` is direct credits and other credits that are
+not transfers or card refunds.
 
-`GET /finance` adds `counterparties`: id, name, role (`merchant` or
-`person`), `subscription`, `large_transfers`. Aliases stay in the file.
-Shops from the category list are already there. A person is never a
-subscription just because the payment repeats.
+`commission` is the reselling sheet (`manj`, tab `general`): sold rows
+whose name contains "commission" and whose sale date is inside the window.
+`total` is their Net P/L summed, or null when the sheet could not be read.
+`rows` gives each row's `name`, `category`, `amount`, `sold`, `due`
+(sold minus commission), and `party`. A row with no sale date is not tied
+to any week and is left out. Bank transfers are never the commission. The
+same commission is omitted from `reselling.inventory.net_pl`, which
+reports it once as `commission`.
 
-Osko descriptions in this payload have the last two words redacted. Those
-words are the payee. `unreviewed.items[].payee` is that name, unredacted,
-so it can be labelled. Do not send `[redacted]` back as the fragment: it is
-not on the bank line, and the label is refused. Telegram `/unreviewed`
-prints the full line, the posted date, and a `/who` or `/label` command
-that matches it. A date printed in the description (25Oct) is accepted as
-well as the posted date. `/who` and `/label` say which lines they matched,
-and they say so when they matched nothing. `/who Jane Doe` saves a person;
-the word `person` is optional.
+`flagged` lists up to four spending lines of $80 or more (`date`,
+`amount`, `category`, redacted `description`). `weekly_budget` is the
+`exchange_target` weekly budget ($75 unless `term_context.json` says
+otherwise). `budget_for_range` prorates that budget by `days / 7`.
+`weekly_equivalent` is spend scaled to a 7-day week. `over_budget`
+compares `total_spend` with `budget_for_range`.
 
-```
-curl -sS -H "Authorization: Bearer $JARVIS_API_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Nilesh Banga","role":"person","aliases":["nilesh"]}' \
-  https://<your-host>/finance/counterparties
-
-curl -sS -H "Authorization: Bearer $JARVIS_API_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"date":"2026-10-26","amount":4932,"description":"F40S","purpose":"resale","direction":"out"}' \
-  https://<your-host>/finance/lines
-
-curl -sS -H "Authorization: Bearer $JARVIS_API_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{}' \
-  "https://<your-host>/finance/resale?start=2026-10-20&end=2026-10-26"
-```
-
-`purpose` is `resale`, `spending`, or `income` (`pass-through` is accepted
-as `resale`). `POST /finance/resale` labels every suggested line in the
-window: a large unexplained deposit and a large forward in the same window,
-or a line within a dollar of a sheet sale or cost. One action. Card spend
-and small payments are not suggested. The sheet is only a hint.
-
-The same answers can be written by editing `data/counterparties.json` on
-the VPS (`/home/jarvis/jarvis/data/counterparties.json`). It is read on the
-next request. A restart is not required to label. `data/` is not in git.
-Telegram: `/unreviewed`, `/who "Nilesh Banga"`, `/label 2026-10-26 4932
-F40S resale`, `/resale`. `/who ... large` sets `large_transfers` to
-`spending`. A `/who` or `/label` that matches nothing says so. The person
-is still saved; the line is not.
-
-`data/transfer_overrides.json` is no longer read. There is no rail-wide
-net and no carry from the previous week.
+Subscriptions are known names (Spotify, Netflix, iCloud, and so on) on
+card, BPAY, or direct debit lines. A transfer to a person is never a
+subscription, however often it repeats.
 
 #### Savings
 

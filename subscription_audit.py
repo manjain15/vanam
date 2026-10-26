@@ -12,6 +12,7 @@ UPDATE YOUR CSV FIRST:
 """
 
 import datetime
+import re
 from pathlib import Path
 from collections import defaultdict
 
@@ -22,28 +23,54 @@ from finance_tracker import parse_stgeorge_csv, EVERYDAY_CSV
 TIMEZONE = pytz.timezone(config.TIMEZONE)
 
 
+# Known subscriptions, matched as whole words on card, BPAY and direct debit
+# lines. A transfer to a person is never a subscription.
+SUBSCRIPTION_NAMES = {
+    "spotify": "Spotify",
+    "netflix": "Netflix",
+    "disney": "Disney+",
+    "stan": "Stan",
+    "icloud": "iCloud",
+    "youtube": "YouTube Premium",
+    "playstation": "PlayStation",
+    "anthropic": "Claude",
+    "openai": "ChatGPT",
+}
+
+
+def _subscription_for(description):
+    """(id, display name) for a known subscription on this line, or None."""
+    from finance_tracker import _normalise_desc
+
+    words = set(re.sub(r"[^a-z0-9]+", " ", _normalise_desc(description)).split())
+    for key, name in SUBSCRIPTION_NAMES.items():
+        if key in words:
+            return key, name
+    return None
+
+
 def find_recurring(transactions, months=3):
     """
-    Debits to counterparties Manav has marked as subscriptions.
+    Debits to known subscriptions (SUBSCRIPTION_NAMES).
 
-    Repeating text is not a subscription. A person paid every month stays
-    out of this list. Own-account moves and pending holds are skipped.
+    Repeating text is not a subscription. Transfers, own-account moves and
+    pending holds are skipped, so a person paid every month stays out.
     """
-    import counterparties
+    from finance_tracker import rail_of
 
     today = datetime.datetime.now(TIMEZONE).date()
     cutoff = today - datetime.timedelta(days=months * 31)
-    store = counterparties.load_store()
     by_id = defaultdict(list)
     for txn in transactions:
         if txn["date"] < cutoff or txn.get("debit", 0) <= 0 or txn.get("pending"):
             continue
-        if counterparties.is_self(txn.get("description") or ""):
+        description = txn.get("description") or ""
+        if rail_of(description) not in ("card", "bpay", "direct_debit"):
             continue
-        match = counterparties.match_counterparty(txn.get("description") or "", store)
-        if not match or not match.get("subscription") or match.get("role") == "person":
+        match = _subscription_for(description)
+        if match is None:
             continue
-        by_id[match["id"]].append((txn, match))
+        by_id[match[0]].append((txn, {"id": match[0], "name": match[1]}))
 
     recurring = []
     for _id, pairs in by_id.items():

@@ -130,7 +130,7 @@ def test_pending_debits_reduce_the_ledger_when_no_available_column(tmp_path, mon
         txns, OCT25, OCT26, 75, extra_inflows=[],
     )
     assert summary["total_spend"] == 10
-    assert summary["unreviewed"]["count"] == 0
+    assert summary["transfers"]["count"] == 0
 
 
 def test_posted_twin_is_not_subtracted_again_or_counted_twice(tmp_path, monkeypatch):

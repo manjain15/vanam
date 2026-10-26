@@ -296,22 +296,17 @@ def commission_record(item: Item):
     }
 
 
-def commissions_for_window(items, start, end, include_undated=False):
-    """Commission rows that belong to this window.
+def commissions_for_window(items, start, end):
+    """Commission rows whose sale date is inside this window.
 
-    A row with a sale date counts when that date is inside the window.
-    A row with no sale date counts only when include_undated is set,
-    which is a week that already has labelled resale lines. Dated rows
-    from other weeks stay out, so an old commission is not added again.
+    A row with no sale date is not tied to any week, so it is left out.
+    Dated rows from other weeks stay out, so an old commission is not
+    added again.
     """
     rows = []
     for item in items:
         record = commission_record(item)
-        if record is None:
-            continue
-        if record["sale_date"] is None:
-            if include_undated:
-                rows.append(record)
+        if record is None or record["sale_date"] is None:
             continue
         day = item.sale_date.date()
         if start <= day <= end:

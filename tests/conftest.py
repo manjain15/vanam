@@ -31,11 +31,19 @@ def _no_real_google_health(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _isolated_counterparties(tmp_path, monkeypatch):
-    """Spending tests never read or write the real counterparty file."""
+def _isolated_spending_sources(tmp_path, monkeypatch):
+    """
+    Spending tests never read the real Back Tap log or the reselling sheet.
+    A test that needs logged spends writes to the patched SPEND_FILE; one
+    that needs commission rows patches finance_tracker._load_sheet_items.
+    """
     try:
-        import counterparties
+        import live_spend
+        monkeypatch.setattr(live_spend, "SPEND_FILE", tmp_path / "live_spend.jsonl")
     except Exception:
-        return
-    monkeypatch.setattr(counterparties, "STORE_PATH", tmp_path / "counterparties.json")
-    monkeypatch.setattr(counterparties, "_sheet_amounts", lambda: set())
+        pass
+    try:
+        import finance_tracker
+        monkeypatch.setattr(finance_tracker, "_load_sheet_items", lambda: [])
+    except Exception:
+        pass
