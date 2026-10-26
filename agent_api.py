@@ -1425,6 +1425,7 @@ def load_reselling_inventory():
         "total_cogs": round(summary["total_cogs"], 2),
         "total_fees": round(summary["total_fees"], 2),
         "net_pl": round(summary["net_pl"], 2),
+        "commission": round(summary.get("commission") or 0, 2),
         "avg_margin_pct": round(summary["avg_margin_pct"], 1),
         "capital_stock": round(summary["capital_stock"], 2),
         "capital_pending": round(summary["capital_pending"], 2),

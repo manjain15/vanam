@@ -385,7 +385,7 @@ def test_refunded_knockout_brings_the_week_to_185(tmp_path, monkeypatch):
     assert "jaiswal" in summary["flagged"][0]["description"].lower()
     assert summary["transaction_count"] == 7
     assert summary["unfinished"] is True
-    assert summary["resale"]["income"] == 0
+    assert summary["resale"]["income"] is None
     unreviewed = {item["amount"] for item in summary["unreviewed"]["items"]}
     assert 17000 in unreviewed
     assert 25 not in unreviewed

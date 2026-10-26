@@ -15,7 +15,7 @@ sys.modules.setdefault("gspread", SimpleNamespace(Worksheet=object))
 import pytest
 
 import reselling_tracker
-from reselling_tracker import Item, _is_flip, _parse_row, compute_summary
+from reselling_tracker import Item, _is_flip, _parse_row, commission_record, compute_summary
 
 
 def _row(status, category, name, cost, sale_price="", fees=""):
@@ -121,6 +121,37 @@ def test_seven_memberships_close_the_gap():
     assert summary["best_flip"].category == "Cards"
     assert summary["worst_flip"].category == "Cards"
     assert summary["avg_margin_pct"] > 0
+
+
+def test_commission_row_is_income_and_not_flip_profit():
+    """banga selling commission is 10% of the stock sold, not a flip.
+
+    The sheet Net P/L is $1,387. The sale price is the $13,870 of stock.
+    That profit must not also sit inside net P/L.
+    """
+    row = _row("Sold", "Other", "banga selling commission", "0", "13870")
+    row[12] = "$1,387.00"
+    item = _parse_row(row)
+    assert item is not None
+    assert item.category == "Other"
+    assert item.sheet_net == 1387
+    record = commission_record(item)
+    assert record["amount"] == 1387
+    assert record["sold"] == 13870
+    assert record["due"] == 12483
+    assert record["party"] == "banga"
+
+    flip = Item(
+        status="sold", category="Cards", name="Own flip",
+        cost=100, sale_price=150,
+    )
+    summary = compute_summary([item, flip])
+    assert summary["sold_count"] == 1
+    assert summary["total_revenue"] == 150
+    assert summary["net_pl"] == 50
+    assert summary["commission"] == 1387
+    assert "Other" not in summary["by_category"]
+    assert summary["best_flip"].name == "Own flip"
 
 
 def test_summary_text_lists_membership_without_calling_it_a_flip(monkeypatch):

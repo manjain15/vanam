@@ -166,9 +166,15 @@ Routes: GET /finance and /finance/*, POST /spend, GET /flags, GET /today.
   savings account alone. A null component was not read.
   spending.unreviewed is transfers not in the total. unfinished is true
   while that list has anything on it. Do not treat the total as the
-  whole week when unfinished is true. spending.resale is only lines
-  labelled resale: in, out, net, and income (the leftover, never
-  negative spending). A buyer deposit is not personal income, and a
+  whole week when unfinished is true.   spending.resale is only lines labelled resale. in and out are the
+  bank totals and stay out of personal spending. net is in minus out,
+  for checking the lines. income is the sheet commission (a sold row
+  whose name contains "commission"), not in minus out. income is null
+  when the sheet was not read. difference shows sold, commission, the
+  amount due, what the bank lines forwarded, and what was not seen as
+  forwarded. Do not add that commission on top of
+  reselling.inventory.net_pl. inventory.commission is the sheet total
+  kept out of net_pl. A buyer deposit is not personal income, and a
   large forward is not spending, until both are labelled. Card spend
   and small payments to people are separate. counterparties on the
   same payload lists role, subscription, and large_transfers.

@@ -2,7 +2,8 @@
 
 Buyer deposits for Nilesh's stock land in the everyday account, then the
 proceeds minus commission are forwarded. Only lines labelled resale are
-netted, and only against each other. The leftover is resale income.
+kept out of spending. The commission is the reselling sheet, not the
+bank leftover.
 The $26, $7, and $1.70 payments stay in spending either way.
 """
 
@@ -113,9 +114,11 @@ def test_unlabelled_resale_stays_unreviewed_and_small_oskos_count():
     assert summary["by_category"]["Transport"] == 39.57
     assert summary["by_category"]["Other"] == SMALL
     assert summary["unfinished"] is True
-    assert summary["resale"] == {
-        "in": 0.0, "out": 0.0, "net": 0.0, "income": 0.0, "count": 0,
-    }
+    assert summary["resale"]["in"] == 0.0
+    assert summary["resale"]["out"] == 0.0
+    assert summary["resale"]["net"] == 0.0
+    assert summary["resale"]["count"] == 0
+    assert summary["resale"]["income"] is None
     assert summary["income"] == []
     amounts = {(item["amount"], item["direction"]) for item in summary["unreviewed"]["items"]}
     assert amounts == {
@@ -140,13 +143,8 @@ def test_accepting_the_suggestion_nets_only_the_resale_lines():
     assert summary["resale"]["in"] == DEPOSITS
     assert summary["resale"]["out"] == FORWARDS
     assert summary["resale"]["net"] == 1007
-    assert summary["resale"]["income"] == 1007
-    assert summary["income"] == [{
-        "date": END.isoformat(),
-        "description": "Resale commission",
-        "amount": 1007,
-        "source": "Resale",
-    }]
+    assert summary["resale"]["income"] is None
+    assert summary["income"] == []
 
 
 def test_resale_leftover_below_zero_is_not_negative_spending():
@@ -156,7 +154,7 @@ def test_resale_leftover_below_zero_is_not_negative_spending():
     summary = _summary(txns)
     assert summary["total_spend"] == SPEND
     assert summary["resale"]["net"] == round(10000 - FORWARDS, 2)
-    assert summary["resale"]["income"] == 0
+    assert summary["resale"]["income"] is None
     assert summary["income"] == []
 
 
@@ -322,7 +320,8 @@ def test_finance_routes_label_resale_in_one_action(tmp_path, monkeypatch):
         "/finance/spending?start=2026-10-20&end=2026-10-26", headers=AUTH,
     ).get_json()
     assert after["total_spend"] == SPEND
-    assert after["resale"]["income"] == 1007
+    assert after["resale"]["net"] == 1007
+    assert after["resale"]["income"] is None
     assert after["unfinished"] is False
     assert "revolut" not in accepted.get_data(as_text=True).lower()
 

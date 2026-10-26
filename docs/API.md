@@ -279,10 +279,18 @@ line is labelled, unless that person's `large_transfers` is `spending`.
 `unreviewed` lists those waiting lines (`count`, `total`, `total_in`,
 `total_out`, `items`). `unfinished` is true while the list is not empty.
 Those lines are not in `total_spend` and they do not cancel anything else.
-`resale` is only the lines labelled resale: `in`, `out`, `net`, `income`
-(`max(net, 0)`), `count`. The leftover is also on `income` with source
-`Resale`. A negative net is not negative spending. Buyer deposits are not
-personal income until they are in that group.
+`resale` is the lines labelled resale. `in` and `out` are the bank totals
+for that group, and `net` is `in` minus `out`, kept so the lines can be
+checked. Those lines are left out of `total_spend`. They are not income.
+`income` is the commission from the reselling sheet (`manj`, tab `general`):
+a sold row whose name contains "commission". The amount is that row's Net
+P/L. A sale price that is not the same number is the stock sold, and
+`difference.due` is sold minus commission. `difference.forwarded` is the
+bank `out`. `difference.not_forwarded` is due minus forwarded. `note`
+states that gap when the sheet and the bank disagree, and does not choose
+why. `income` is null when the sheet could not be read. It is not the bank
+residual. The same commission is omitted from `reselling.inventory.net_pl`,
+which reports it once as `commission`.
 
 `flagged` lists up to four debits of $80 or more (`date`, `amount`,
 `category`, redacted `description`). When the window includes today, `live`

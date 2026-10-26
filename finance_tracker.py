@@ -515,11 +515,105 @@ def _cents(amount):
 def _classified(transactions, start, end):
     """Spending, income, resale, and unreviewed lines for an inclusive window.
 
-    Counterparties and per-line resale labels decide this. There is no
-    rail-wide net and no surname matcher.
+    Counterparties and per-line resale labels decide which bank lines are
+    spending. Commission income, when the sheet can be read, is attached
+    afterwards. The bank residual is not that income.
     """
     import counterparties
-    return counterparties.classify(transactions, start, end)
+    classified = counterparties.classify(transactions, start, end)
+    _attach_sheet_commission(classified, start, end)
+    return classified
+
+
+def _load_sheet_items():
+    """Reselling sheet rows, or None when the sheet cannot be read."""
+    try:
+        from reselling_tracker import load_items
+        return load_items()
+    except Exception as exc:
+        print(f"⚠️  resale commission: sheet unavailable: {exc}")
+        return None
+
+
+def _money_text(amount):
+    """A dollar amount with cents, for the resale difference note."""
+    return f"${amount:,.2f}"
+
+
+def _attach_sheet_commission(classified, start, end):
+    """Set resale income from commission rows. Leave the bank figures alone.
+
+    A missing sheet leaves income as None. It does not fall back to
+    inflows minus outflows. The note states the gap when the sheet and
+    the bank lines disagree. It does not choose a reason.
+    """
+    from reselling_tracker import commissions_for_window
+
+    resale = classified.get("resale") or {}
+    items = _load_sheet_items()
+    if items is None:
+        resale["income"] = None
+        resale["commission"] = None
+        resale["note"] = None
+        resale["difference"] = None
+        classified["resale"] = resale
+        return classified
+
+    rows = commissions_for_window(items, start, end, resale.get("count", 0) > 0)
+    commission = round(sum(row["amount"] for row in rows), 2)
+    forwarded = round(resale.get("out") or 0, 2)
+    bank_net = round(resale.get("net") or 0, 2)
+    known_sold = bool(rows) and all(row["sold"] is not None for row in rows)
+    sold = round(sum(row["sold"] for row in rows), 2) if known_sold else None
+    due = round(sold - commission, 2) if sold is not None else None
+    not_forwarded = round(due - forwarded, 2) if due is not None else None
+    parties = " and ".join(dict.fromkeys(row["party"] for row in rows if row.get("party")))
+    difference = None
+    note = None
+    if rows:
+        difference = {
+            "sold": sold,
+            "commission": commission,
+            "due": due,
+            "party": parties or None,
+            "forwarded": forwarded,
+            "not_forwarded": not_forwarded,
+            "bank_net": bank_net,
+        }
+        if sold is not None and (not_forwarded != 0 or bank_net != commission):
+            note = (
+                f"Sold {_money_text(sold)}, commission {_money_text(commission)}, "
+                f"so {_money_text(due)} due to {parties}. "
+                f"Forwarded {_money_text(forwarded)} in the bank lines, "
+                f"so {_money_text(not_forwarded)} not seen as forwarded."
+            )
+            if not_forwarded > 0:
+                note += (
+                    " Buyers may have paid outside this week or into another account, "
+                    "or the balance may still be owed."
+                )
+        elif bank_net != commission:
+            note = (
+                f"Sheet commission {_money_text(commission)}. "
+                f"Bank lines net to {_money_text(bank_net)}. "
+                f"Difference {_money_text(round(commission - bank_net, 2))}."
+            )
+    resale["income"] = commission
+    resale["commission"] = [
+        {
+            "name": row["name"],
+            "category": row["category"],
+            "amount": row["amount"],
+            "sold": row["sold"],
+            "due": row["due"],
+            "party": row["party"],
+        }
+        for row in rows
+    ]
+    resale["note"] = note
+    resale["difference"] = difference
+    classified["resale"] = resale
+    return classified
 
 
 # ── Spending analysis ─────────────────────────────────────────────────────────
@@ -1024,11 +1118,12 @@ def is_monthly_review_day():
 
 def analyse_income(transactions, days=30):
     """
-    Income over the last N days: wages, small gifts, and resale commission.
+    Income over the last N days: wages and small gifts.
 
     A credit from someone Manav has already paid reduces that spending
     instead of counting here. A large unexplained deposit is unreviewed,
-    not income. Resale-labelled lines contribute only their leftover.
+    not income. Commission is not added here. It is the reselling sheet
+    figure on the resale group, and the sheet P/L does not include it.
     """
     today = datetime.datetime.now(TIMEZONE).date()
     cutoff = today - datetime.timedelta(days=days)
@@ -1100,9 +1195,11 @@ def get_finance_summary():
             f"  {'Unreviewed':<18} ${unreviewed['total']:.2f}"
             f"  ({unreviewed['count']} transfers, week unfinished)"
         )
-    resale_income = (spending.get("resale") or {}).get("income") or 0
-    if resale_income:
-        lines.append(f"  {'Resale income':<18} ${resale_income:.2f}")
+    resale = spending.get("resale") or {}
+    if resale.get("income") is not None and resale.get("count"):
+        lines.append(f"  {'Resale commission':<18} ${resale['income']:.2f}")
+        if resale.get("note"):
+            lines.append(f"  {resale['note']}")
 
     # Flag big transactions
     if spending["big_transactions"]:
@@ -1208,10 +1305,11 @@ def summarise_spending(transactions, start, end, weekly_budget, extra_inflows=No
 
     Own-account moves are dropped. A credit from the same counterparty
     reduces an earlier debit inside the refund window. Amounts do not have
-    to match. Lines labelled resale are netted only against each other, and
-    the leftover is resale income. Unknown transfers, and transfers of $500
-    or more that are not labelled, are listed on unreviewed and the week is
-    unfinished. They are not in total_spend and they do not reduce it.
+    to match. Lines labelled resale stay out of spending. Commission income
+    is the reselling sheet, not inflows minus outflows. Unknown transfers,
+    and transfers of $500 or more that are not labelled, are listed on
+    unreviewed and the week is unfinished. They are not in total_spend and
+    they do not reduce it.
     Descriptions on flagged rows are the full bank line. extra_inflows is
     ignored.
     """

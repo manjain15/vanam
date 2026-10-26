@@ -5,8 +5,9 @@ Roles are self, merchant, and person. There is no partner role. Nilesh is
 a person: money Manav pays him is spending, and money Nilesh pays him
 reduces earlier spending with Nilesh. Stock he sells for Nilesh is not a
 role. It is a label on the individual lines (purpose "resale"). Those
-labelled lines are netted against each other only. The leftover is resale
-income. Card spend and small payments to people are left alone.
+labelled lines stay out of personal spending. They are not the commission.
+The commission is the reselling sheet. Card spend and small payments to
+people are left alone.
 
 Unknown Osko, Sct, PayID, and NPP lines are listed as unreviewed and do
 not enter the total. A card, BPAY, or direct debit to a shop Vanam has
@@ -650,9 +651,9 @@ def classify(transactions, start, end, store=None, sheet_amounts=None):
     Spending lines have already had a later credit from the same
     counterparty taken off. A credit with nothing left to reduce becomes
     income when it is small. It never pushes spending below zero. Resale
-    lines are netted only against other resale lines. Large transfers and
-    unknown transfers stay on unreviewed until labelled, and a week with
-    any of those is unfinished.
+    lines stay out of spending. Their bank in and out are not commission.
+    Large transfers and unknown transfers stay on unreviewed until
+    labelled, and a week with any of those is unfinished.
     """
     store = store or load_store()
     if sheet_amounts is None:
@@ -798,13 +799,6 @@ def classify(transactions, start, end, store=None, sheet_amounts=None):
     resale_in = round(resale_in, 2)
     resale_out = round(resale_out, 2)
     net = round(resale_in - resale_out, 2)
-    if net > 0:
-        income.append({
-            "date": end,
-            "description": "Resale commission",
-            "amount": net,
-            "source": "Resale",
-        })
     unreviewed.sort(key=lambda item: (item["date"], -item["amount"]))
     return {
         "spending": spending,
@@ -813,8 +807,12 @@ def classify(transactions, start, end, store=None, sheet_amounts=None):
             "in": resale_in,
             "out": resale_out,
             "net": net,
-            "income": max(net, 0.0),
             "count": resale_count,
+            # Filled from the sheet. The bank residual is not the commission.
+            "income": None,
+            "commission": None,
+            "note": None,
+            "difference": None,
         },
         "unreviewed": unreviewed,
         "unfinished": bool(unreviewed),
