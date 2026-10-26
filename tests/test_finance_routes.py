@@ -344,11 +344,13 @@ def test_refund_reduces_spending_for_the_week(tmp_path, monkeypatch):
     res = _client().get("/finance/spending", headers=AUTH)
     assert res.status_code == 200
     body = res.get_json()
-    assert body["total_spend"] == 185.25
+    assert body["total_spend"] == 150.25
     assert body["by_category"]["Entertainment"] == 134.95
     assert body["by_category"]["Transport"] == 11.70
-    assert body["by_category"]["Other"] == 38.60
+    assert body["by_category"]["Other"] == 3.60
     assert [item["amount"] for item in body["flagged"]] == [120.0]
+    assert body["transfers_net"]["counted"] == 0
+    assert body["transfers_net"]["net"] < 0
 
 
 def test_redact_leaves_dates_and_amounts():

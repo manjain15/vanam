@@ -331,13 +331,16 @@ def test_refunded_knockout_brings_the_week_to_185(tmp_path, monkeypatch):
     txns = finance_tracker.parse_stgeorge_csv(path)
     summary = finance_tracker.summarise_spending(txns, WEEK_START, WEEK_END, 75)
 
-    assert summary["total_spend"] == 185.25
+    # Doomsday and Hot Wheels are person-to-person Oskos. Sale deposits in
+    # this week are larger, so that net is negative and those two drop out.
+    # The PayPal visa charge stays in Other. Tickets and card spend stay.
+    assert summary["total_spend"] == 150.25
     assert summary["by_category"]["Entertainment"] == 134.95
     assert summary["by_category"]["Transport"] == 11.70
-    assert summary["by_category"]["Other"] == 38.60
+    assert summary["by_category"]["Other"] == 3.60
     assert [row["amount"] for row in summary["flagged"]] == [120.0]
     assert "jaiswal" in summary["flagged"][0]["description"].lower()
-    assert summary["transaction_count"] == 7
+    assert summary["transaction_count"] == 5
 
     class FrozenDateTime(datetime.datetime):
         @classmethod
@@ -349,7 +352,7 @@ def test_refunded_knockout_brings_the_week_to_185(tmp_path, monkeypatch):
 
     monkeypatch.setattr(finance_tracker.datetime, "datetime", FrozenDateTime)
     spending = finance_tracker.analyse_spending(txns, days=7)
-    assert round(spending["total_spend"], 2) == 185.25
+    assert round(spending["total_spend"], 2) == 150.25
     assert round(spending["category_totals"]["Entertainment"], 2) == 134.95
     assert [t["debit"] for t in spending["big_transactions"]] == [120.0]
     knockouts = [
@@ -394,11 +397,14 @@ def test_refund_matching_is_conservative():
     summary = finance_tracker.summarise_spending(
         txns, day, datetime.date(2026, 9, 28), 75,
     )
-    # The $15 Visa refund reduces a Woolworths debit. The other credits do not.
-    assert summary["total_spend"] == 904.0
+    # The $15 Visa refund reduces a Woolworths debit. The other credits do
+    # not refund those purchases. The Nilesh Osko is person-to-person and
+    # the deposits in this window are larger, so it nets out.
+    assert summary["total_spend"] == 804.0
     assert summary["by_category"]["Food & dining"] == 550.0  # 390 + 135 + 40 - 15
     assert summary["by_category"]["Entertainment"] == 174.0  # 54 + 120, Priya is not a refund
     assert summary["by_category"]["Shopping"] == 80.0
+    assert "Other" not in summary["by_category"]
 
 
 def test_one_debit_takes_one_refund_only():

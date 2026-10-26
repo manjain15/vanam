@@ -380,11 +380,10 @@ DEFAULT_OWN_ACCOUNT_RULES = {
 # Override with spending.refund_window_days in term_context.json (1–60).
 DEFAULT_REFUND_WINDOW_DAYS = 14
 
-# Money that arrives and leaves again inside this window is not spending.
-# Override under spending. in term_context.json.
-DEFAULT_PASSTHROUGH_WINDOW_DAYS = 7
-DEFAULT_PASSTHROUGH_TOLERANCE = 0.0
-DEFAULT_PASSTHROUGH_MAX_GROUP = 4
+# Unused transfer inflows this many days before the report can offset
+# this period's person-to-person outflows. 0 disables the lookback.
+# Override with spending.transfer_carry_days in term_context.json (0–30).
+DEFAULT_TRANSFER_CARRY_DAYS = 7
 
 
 def _normalise_deadline(raw) -> str:
@@ -470,46 +469,27 @@ def get_refund_window_days() -> int:
     return days
 
 
-def get_passthrough_settings() -> dict:
+def get_transfer_carry_days() -> int:
     """
-    Window, dollar tolerance, and group size for pass-through matching.
+    Days before the report start whose unused transfer inflows can carry in.
 
-    Reads spending.passthrough_window_days (1–30, default 7),
-    spending.passthrough_tolerance (0–20 dollars, default 0), and
-    spending.passthrough_max_group (2–6, default 4). Missing or
-    out-of-range values fall back to those defaults. Tolerance is how far
-    a matched total may differ, in dollars. max_group is the most inflows
-    or outflows that can form one match.
+    Reads spending.transfer_carry_days from term_context.json. 0 disables
+    the lookback. Missing or out-of-range values (below 0 or above 30)
+    fall back to DEFAULT_TRANSFER_CARRY_DAYS (7). The report window itself
+    is unchanged: only an inflow surplus left after that lookback's own
+    outflows can reduce this period.
     """
     raw = load_context().get("spending") or {}
     if not isinstance(raw, dict):
-        raw = {}
-
-    def _bounded_int(key, default, lo, hi):
-        try:
-            value = int(raw.get(key, default))
-        except (TypeError, ValueError):
-            return default
-        if value < lo or value > hi:
-            return default
-        return value
-
+        return DEFAULT_TRANSFER_CARRY_DAYS
+    value = raw.get("transfer_carry_days", DEFAULT_TRANSFER_CARRY_DAYS)
     try:
-        tolerance = float(raw.get("passthrough_tolerance", DEFAULT_PASSTHROUGH_TOLERANCE))
+        days = int(value)
     except (TypeError, ValueError):
-        tolerance = DEFAULT_PASSTHROUGH_TOLERANCE
-    if tolerance < 0 or tolerance > 20:
-        tolerance = DEFAULT_PASSTHROUGH_TOLERANCE
-
-    return {
-        "window_days": _bounded_int(
-            "passthrough_window_days", DEFAULT_PASSTHROUGH_WINDOW_DAYS, 1, 30,
-        ),
-        "tolerance": round(tolerance, 2),
-        "max_group": _bounded_int(
-            "passthrough_max_group", DEFAULT_PASSTHROUGH_MAX_GROUP, 2, 6,
-        ),
-    }
+        return DEFAULT_TRANSFER_CARRY_DAYS
+    if days < 0 or days > 30:
+        return DEFAULT_TRANSFER_CARRY_DAYS
+    return days
 
 
 def update_finance_goals(goals: dict):

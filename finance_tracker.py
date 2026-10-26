@@ -39,7 +39,6 @@ UPDATE WEEKLY:
 
 import csv
 import datetime
-import itertools
 import json
 import os
 import re
@@ -62,6 +61,9 @@ EVERYDAY_CSV  = FINANCE_DIR / "everyday.csv"
 SAVINGS1_CSV  = FINANCE_DIR / "savings1.csv"
 INVESTING_CSV = FINANCE_DIR / "investing.csv"
 REVOLUT_CSV   = FINANCE_DIR / "revolut.csv"
+# Manual marks for one transfer. data/ is gitignored, so a rule edited on the
+# VPS is not overwritten by deploy. Read on every summary; no restart.
+TRANSFER_OVERRIDES_FILE = SCRIPT_DIR / "data" / "transfer_overrides.json"
 
 # Default owner name for Revolut transfers. Live checks use get_own_account_rules()
 # so term_context.json "own_accounts" can override this without a code change.
@@ -78,8 +80,8 @@ try:
     from term_context import (
         get_finance_goals,
         get_own_account_rules,
-        get_passthrough_settings,
         get_refund_window_days,
+        get_transfer_carry_days,
     )
 except Exception:
     def get_finance_goals():
@@ -103,9 +105,9 @@ except Exception:
         """Fallback when term_context cannot be imported."""
         return 14
 
-    def get_passthrough_settings():
+    def get_transfer_carry_days():
         """Fallback when term_context cannot be imported."""
-        return {"window_days": 7, "tolerance": 0.0, "max_group": 4}
+        return 7
 
 
 # ── Category rules ────────────────────────────────────────────────────────────
@@ -605,6 +607,11 @@ def _cents(amount):
     return int(round(float(amount) * 100))
 
 
+def _dollars(cents):
+    """Cents as a dollar amount rounded to the cent."""
+    return round(int(cents) / 100.0, 2)
+
+
 def _event_dt(txn):
     """Datetime used to order a debit and its refund.
 
@@ -715,7 +722,7 @@ def _refund_offsets(debits, credits, window_days):
     once. See the refund rules at the top of this section.
 
     Returns (offsets, used_credit_ids). used_credit_ids are the id() of
-    credit dicts that were applied, so a pass-through match cannot reuse
+    credit dicts that were applied, so the transfer net cannot reuse
     the same credit.
     """
     offsets = {}
@@ -760,19 +767,41 @@ def _refund_offsets(debits, credits, window_days):
     return offsets, used_credits
 
 
-# Outflows that can be a pass-through. Card purchases are real spending even
-# when a deposit of the same amount arrived. A categorised Osko (a ticket,
-# a shop) is real spending too. Only an uncategorised bank withdrawal can
-# drop out, and only when incoming transfers cover it.
-_PASSTHROUGH_OUT_MARKERS = ("osko withdrawal", "sct withdrawal")
-_PASSTHROUGH_IN_MARKERS = ("osko deposit", "sct deposit")
-# Salary and tutoring must not cancel a withdrawal of the same size.
-_PASSTHROUGH_INCOME = ("Automation", "Tutoring", "Refund")
+# Person-to-person rails that are netted, not counted one by one.
+# Card purchases, direct debits, and BPAY do not match these, so they
+# always stay in spending. Anything described as a transfer is already an
+# own-account move and never reaches this net.
+_TRANSFER_OUT_MARKERS = ("osko withdrawal", "sct withdrawal")
+_TRANSFER_IN_MARKERS = ("osko deposit", "sct deposit")
+# Identified income must not cancel a real transfer. Sale-proceeds Oskos
+# that do not match these stay on the inflow side.
+_TRANSFER_INCOME = ("Automation", "Tutoring", "Refund", "Pokemon Sales")
+_NOT_INFLOW_TEXT = ("direct credit", "payroll", "salary", "wages")
+_OVERRIDE_TREATS = {"spending": "spending", "pass-through": "pass-through", "passthrough": "pass-through"}
 
 
-def _is_passthrough_outflow(txn):
-    """True for an uncategorised Osko or Sct withdrawal that is not his own."""
-    if txn.get("pending") or (txn.get("debit") or 0) <= 0:
+def _rail_is_person_transfer(description, direction):
+    """True when the description is Osko, Sct, PayID, or NPP.
+
+    direction is 'out' or 'in'. PayID and NPP count in either direction;
+    the debit or credit says which way the money moved.
+    """
+    desc = _normalise_desc(description)
+    if re.search(r"\bpayid\b", desc) or re.search(r"\bnpp\b", desc):
+        return True
+    markers = _TRANSFER_OUT_MARKERS if direction == "out" else _TRANSFER_IN_MARKERS
+    return any(marker in desc for marker in markers)
+
+
+def _is_everyday_transfer_out(txn):
+    """True for an uncategorised person-to-person withdrawal on this account.
+
+    A categorised Osko (a ticket, a shop) is a purchase and stays in
+    spending. Own-account moves and pending rows are not part of the net.
+    """
+    if txn.get("pending") or txn.get("rail") is not None:
+        return False
+    if (txn.get("debit") or 0) <= 0:
         return False
     description = txn.get("description") or ""
     if _is_internal_spend(description):
@@ -780,21 +809,19 @@ def _is_passthrough_outflow(txn):
     category = txn.get("category") or categorise(description)
     if category != "Other":
         return False
-    desc = _normalise_desc(description)
-    return any(marker in desc for marker in _PASSTHROUGH_OUT_MARKERS)
+    return _rail_is_person_transfer(description, "out")
 
 
-def _is_external_transfer_in(txn, refunded_ids):
-    """True for money arriving from outside his own accounts.
+def _is_everyday_transfer_in(txn, refunded_ids):
+    """True for person-to-person money arriving on this account.
 
-    A credit already used to refund a purchase is not reused. Own-account
-    deposits, Revolut top-ups, and salary, tutoring, or refund credits are
-    not evidence that a later withdrawal was someone else's money.
-    Revolut rows count only when they are an external transfer (rail
-    'transfer'); card payments do not. On the everyday account only Osko
-    and Sct deposits count. Internet deposits are own-account credits.
-    Direct credits are left out so salary does not cancel a withdrawal.
+    A credit already used as a refund is not reused. Own-account deposits,
+    salary, payroll, tutoring, pokemon-sale income, and refund credits are
+    not inflows, so pay does not cancel a withdrawal. Revolut rows carry a
+    rail and are netted on that account instead.
     """
+    if txn.get("rail") is not None:
+        return False
     if id(txn) in refunded_ids or txn.get("pending"):
         return False
     if txn.get("internal") or txn.get("refund"):
@@ -804,163 +831,189 @@ def _is_external_transfer_in(txn, refunded_ids):
     description = txn.get("description") or ""
     if _is_internal_credit(description):
         return False
-    if categorise_income(description) in _PASSTHROUGH_INCOME:
+    if categorise_income(description) in _TRANSFER_INCOME:
         return False
-    rail = txn.get("rail")
-    if rail is not None:
-        return rail == "transfer"
     desc = _normalise_desc(description)
-    return any(marker in desc for marker in _PASSTHROUGH_IN_MARKERS)
+    if any(marker in desc for marker in _NOT_INFLOW_TEXT):
+        return False
+    return _rail_is_person_transfer(description, "in")
 
 
-def revolut_passthrough_inflows():
-    """External Revolut transfers in. Missing or unreadable file is [].
+def _is_revolut_external_transfer(txn):
+    """True for a completed external Revolut transfer with an amount.
 
-    Top-ups and transfers with the owner in the description stay internal
-    and are not returned. Card payments are not returned either, so a shop
-    on Revolut cannot cancel an Osko of the same amount.
+    Top-ups, owner transfers, and card payments are not included.
     """
+    if txn.get("internal") or txn.get("refund") or txn.get("pending"):
+        return False
+    if txn.get("rail") != "transfer":
+        return False
+    return (txn.get("debit") or 0) > 0 or (txn.get("credit") or 0) > 0
+
+
+def revolut_external_transfers():
+    """External Revolut transfers in and out. Missing or unreadable file is []."""
     path = REVOLUT_CSV
     if path is None or not Path(path).exists():
         return []
     try:
         rows = parse_revolut_csv(path)
     except Exception as exc:
-        print(f"⚠️  pass-through: revolut inflows unavailable: {exc}")
+        print(f"⚠️  transfer net: revolut transfers unavailable: {exc}")
         return []
-    return [row for row in rows if _is_external_transfer_in(row, ())]
+    return [row for row in rows if _is_revolut_external_transfer(row)]
 
 
-def _external_transfer_inflows(transactions, refunded_ids):
-    """Everyday credits that can justify a pass-through withdrawal."""
-    return [
-        txn for txn in transactions
-        if _is_external_transfer_in(txn, refunded_ids)
-    ]
+def load_transfer_overrides(path=None):
+    """Rules that force one transfer to count as spending or as pass-through.
 
-
-def _within_passthrough_window(inflow, outflow, window_days):
-    """True when the inflow is on the outflow date or up to window_days before."""
-    gap = (outflow["date"] - inflow["date"]).days
-    return 0 <= gap <= window_days
-
-
-def _first_sum_subset(pairs, target_cents, tolerance_cents, max_group):
-    """Ids of 2..max_group pairs whose cents sum to target, or None.
-
-    pairs are (id, cents, gap). The smallest group wins. Within that size
-    the first combination after sorting by gap wins, which is the closest
-    money. At most 18 pairs are considered.
+    Reads data/transfer_overrides.json on every call. The file is either
+    {"rules": [...]} or a list. Each rule needs date (YYYY-MM-DD), amount
+    (dollars), description (a fragment of the bank line), and treat
+    ("spending" or "pass-through"). A missing, empty, or invalid file is
+    []. Own-account lines never reach these rules.
     """
-    ordered = sorted(pairs, key=lambda item: (item[2], item[0]))[:18]
-    upper = min(max_group, len(ordered))
-    for size in range(2, upper + 1):
-        for combo in itertools.combinations(ordered, size):
-            total = sum(cents for _item_id, cents, _gap in combo)
-            if abs(total - target_cents) <= tolerance_cents:
-                return [item_id for item_id, _cents, _gap in combo]
+    path = Path(path) if path is not None else TRANSFER_OVERRIDES_FILE
+    if path is None or not path.exists():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if isinstance(raw, dict):
+        raw = raw.get("rules")
+    if not isinstance(raw, list):
+        return []
+    rules = []
+    for rule in raw:
+        if not isinstance(rule, dict):
+            continue
+        treat_key = str(rule.get("treat") or "").strip().lower().replace("_", " ").replace("-", " ")
+        treat_key = "-".join(treat_key.split())
+        treat = _OVERRIDE_TREATS.get(treat_key)
+        fragment = _normalise_desc(rule.get("description") or "")
+        if treat is None or not fragment:
+            continue
+        try:
+            day = datetime.date.fromisoformat(str(rule.get("date") or "")[:10])
+            amount = _cents(rule.get("amount"))
+        except (TypeError, ValueError):
+            continue
+        if amount <= 0:
+            continue
+        rules.append({
+            "date": day,
+            "amount": amount,
+            "description": fragment,
+            "treat": treat,
+        })
+    return rules
+
+
+def _override_treat(txn, rules):
+    """'spending', 'pass-through', or None. The first matching rule wins.
+
+    The date and the amount to the cent must match, and the rule's
+    description fragment must sit inside the bank description. A debit
+    matches its debit; a credit matches its credit.
+    """
+    if not rules:
+        return None
+    day = txn.get("date")
+    description = _normalise_desc(txn.get("description") or "")
+    amount = _cents(txn.get("debit") or 0) or _cents(txn.get("credit") or 0)
+    if amount <= 0 or not description:
+        return None
+    for rule in rules:
+        if rule["date"] != day or rule["amount"] != amount:
+            continue
+        if rule["description"] in description:
+            return rule["treat"]
     return None
 
 
-def _match_passthrough_debits(debits, inflows, settings):
-    """Indexes of withdrawals covered by incoming transfers.
+def _transfer_net_dict(in_cents, out_cents, carry_cents):
+    """Audit block for one account. counted is the positive remainder only."""
+    net = out_cents - in_cents - carry_cents
+    return {
+        "in": _dollars(in_cents),
+        "out": _dollars(out_cents),
+        "carry_in": _dollars(carry_cents),
+        "net": _dollars(net),
+        "counted": _dollars(max(net, 0)),
+    }
 
-    One matching amount is paired first. Leftover withdrawals can match a
-    sum of inflows, and one inflow can match a sum of withdrawals. Each
-    side is used once. Inflows have to land on or before the withdrawal,
-    inside settings['window_days']. The matched total may differ by
-    settings['tolerance'] dollars.
+
+def _lookback_surplus_cents(transactions, start, carry_days, refunded_ids, rules):
+    """Unused inflow from the days before start, in cents.
+
+    Outflows in that lookback consume its inflows first, so a deposit that
+    already funded last period's transfers is not reused. A deficit does
+    not carry. A line forced to count as spending does not consume inflow.
+    carry_days of 0 returns 0.
     """
-    window = settings["window_days"]
-    tolerance_cents = int(round(float(settings["tolerance"]) * 100))
-    max_group = settings["max_group"]
-    candidates = [
-        index for index, txn in enumerate(debits) if _is_passthrough_outflow(txn)
-    ]
-    pool = [
-        (index, txn) for index, txn in enumerate(inflows)
-        if (txn.get("credit") or 0) > 0
-    ]
-    used_in = set()
-    used_out = set()
-
-    def _gap(inflow, outflow):
-        return (outflow["date"] - inflow["date"]).days
-
-    for index in sorted(candidates, key=lambda i: (debits[i]["date"], i)):
-        outflow = debits[index]
-        target = _cents(outflow["debit"])
-        best = None
-        for in_index, inflow in pool:
-            if in_index in used_in:
-                continue
-            if not _within_passthrough_window(inflow, outflow, window):
-                continue
-            if abs(_cents(inflow["credit"]) - target) > tolerance_cents:
-                continue
-            rank = (_gap(inflow, outflow), in_index)
-            if best is None or rank < best[0]:
-                best = (rank, in_index)
-        if best is None:
+    if carry_days <= 0:
+        return 0
+    begin = start - datetime.timedelta(days=carry_days)
+    in_cents = 0
+    out_cents = 0
+    for txn in transactions:
+        day = txn.get("date")
+        if day is None or day < begin or day >= start:
             continue
-        used_in.add(best[1])
-        used_out.add(index)
-
-    for index in sorted(candidates, key=lambda i: (debits[i]["date"], i)):
-        if index in used_out:
+        if _is_everyday_transfer_in(txn, refunded_ids):
+            in_cents += _cents(txn["credit"])
             continue
-        outflow = debits[index]
-        pairs = []
-        for in_index, inflow in pool:
-            if in_index in used_in:
-                continue
-            if not _within_passthrough_window(inflow, outflow, window):
-                continue
-            pairs.append((in_index, _cents(inflow["credit"]), _gap(inflow, outflow)))
-        chosen = _first_sum_subset(
-            pairs, _cents(outflow["debit"]), tolerance_cents, max_group,
-        )
-        if not chosen:
+        if not _is_everyday_transfer_out(txn):
             continue
-        used_out.add(index)
-        used_in.update(chosen)
-
-    remaining_in = [
-        (in_index, inflow) for in_index, inflow in pool if in_index not in used_in
-    ]
-    remaining_in.sort(key=lambda item: _cents(item[1]["credit"]), reverse=True)
-    for in_index, inflow in remaining_in:
-        pairs = []
-        for index in candidates:
-            if index in used_out:
-                continue
-            outflow = debits[index]
-            if not _within_passthrough_window(inflow, outflow, window):
-                continue
-            pairs.append((index, _cents(outflow["debit"]), _gap(inflow, outflow)))
-        chosen = _first_sum_subset(
-            pairs, _cents(inflow["credit"]), tolerance_cents, max_group,
-        )
-        if not chosen:
+        if _override_treat(txn, rules) == "spending":
             continue
-        used_in.add(in_index)
-        used_out.update(chosen)
-    return used_out
+        out_cents += _cents(txn["debit"])
+    return max(0, in_cents - out_cents)
 
 
-def _excluded_transfer_summary(debits, indexes):
-    """Count and total of pass-through withdrawals, plus a short audit list."""
+def _revolut_transfer_net(legs, start, end, carry_days):
+    """Net of external Revolut transfers. Not added to personal spending."""
+    begin = start - datetime.timedelta(days=carry_days) if carry_days else start
+    window_in = window_out = prior_in = prior_out = 0
+    for txn in legs or []:
+        if not _is_revolut_external_transfer(txn):
+            continue
+        day = txn.get("date")
+        if day is None:
+            continue
+        incoming = (txn.get("credit") or 0) > 0
+        cents = _cents(txn["credit"] if incoming else txn["debit"])
+        if start <= day <= end:
+            if incoming:
+                window_in += cents
+            else:
+                window_out += cents
+        elif carry_days and begin <= day < start:
+            if incoming:
+                prior_in += cents
+            else:
+                prior_out += cents
+    return _transfer_net_dict(window_in, window_out, max(0, prior_in - prior_out))
+
+
+def _excluded_transfer_summary(txns, total_cents):
+    """Withdrawals pooled out of the line items, and the dollars left out of spend.
+
+    total is the amount that did not become spending. When the whole pool
+    was left out, that equals the sum of items. A positive remainder is
+    spending instead, so total is then smaller than the sum of items.
+    """
     ordered = sorted(
-        indexes,
-        key=lambda index: (
-            debits[index]["date"],
-            debits[index].get("description") or "",
-            index,
+        txns,
+        key=lambda txn: (
+            txn["date"],
+            txn.get("description") or "",
+            txn.get("debit") or 0,
         ),
     )
     items = []
-    for index in ordered:
-        txn = debits[index]
+    for txn in ordered:
         items.append({
             "date": txn["date"].isoformat(),
             "amount": round(txn["debit"], 2),
@@ -968,24 +1021,49 @@ def _excluded_transfer_summary(debits, indexes):
         })
     return {
         "count": len(items),
-        "total": round(sum(item["amount"] for item in items), 2),
+        "total": _dollars(max(total_cents, 0)),
         "items": items,
     }
 
 
+def _remainder_row(amount, when):
+    """One Other debit for a positive transfer remainder."""
+    return {
+        "date": when,
+        "description": "Net transfers",
+        "debit": amount,
+        "credit": 0.0,
+        "balance": None,
+        "category": "Other",
+    }
+
+
 def _net_spending_debits(transactions, start, end, extra_inflows=None):
-    """Counted debits in the inclusive range, after refunds and pass-throughs.
+    """Counted debits in the inclusive range, after refunds and the transfer net.
 
     Own-account transfers and pending rows are dropped first. A fully
     refunded debit is omitted. A partial refund keeps the category and the
-    remaining amount. An Osko or Sct withdrawal is omitted when incoming
-    transfers (on this account or in extra_inflows) cover the same amount
-    inside the pass-through window. The original transaction dicts are not
-    mutated.
+    remaining amount. Person-to-person withdrawals on this account (Osko,
+    Sct, PayID, NPP) are then netted against person-to-person deposits on
+    the same account: outflows minus inflows, minus any inflow surplus from
+    the carry lookback. Only a positive remainder is spending, as one Other
+    line. A negative net does not reduce card, direct-debit, or BPAY
+    spending. When nothing came in, each withdrawal stays as its own line.
 
-    Returns (debits, excluded_transfers). excluded_transfers has count,
-    total, and items for the withdrawals that were removed.
+    External Revolut transfers are netted on their own account and reported
+    under transfers_net.reselling. That remainder is not added here, because
+    the reselling ledger already counts that account and a Revolut deposit
+    must not cancel an everyday Osko.
+
+    A rule in data/transfer_overrides.json can force one withdrawal to
+    count in full (treat spending) or to drop out (treat pass-through).
+    The original transaction dicts are not mutated.
+
+    Returns (debits, excluded_transfers, transfers_net). extra_inflows
+    defaults to external Revolut transfers read from REVOLUT_CSV.
     """
+    if extra_inflows is None:
+        extra_inflows = revolut_external_transfers()
     debits = [
         txn for txn in transactions
         if start <= txn["date"] <= end
@@ -1009,18 +1087,55 @@ def _net_spending_debits(transactions, start, end, extra_inflows=None):
             netted.append(row)
         else:
             netted.append(txn)
-    inflows = _external_transfer_inflows(transactions, refunded_ids)
-    if extra_inflows:
-        inflows.extend(
-            inflow for inflow in extra_inflows
-            if _is_external_transfer_in(inflow, refunded_ids)
-        )
-    excluded_indexes = _match_passthrough_debits(
-        netted, inflows, get_passthrough_settings(),
+
+    rules = load_transfer_overrides()
+    merchant = []
+    pool = []
+    forced_spend = []
+    forced_pass = []
+    for txn in netted:
+        if not _is_everyday_transfer_out(txn):
+            merchant.append(txn)
+            continue
+        treat = _override_treat(txn, rules)
+        if treat == "spending":
+            forced_spend.append(txn)
+        elif treat == "pass-through":
+            forced_pass.append(txn)
+        else:
+            pool.append(txn)
+
+    in_cents = sum(
+        _cents(txn["credit"]) for txn in transactions
+        if start <= txn["date"] <= end and _is_everyday_transfer_in(txn, refunded_ids)
     )
-    excluded = _excluded_transfer_summary(netted, excluded_indexes)
-    kept = [row for index, row in enumerate(netted) if index not in excluded_indexes]
-    return kept, excluded
+    carry_days = get_transfer_carry_days()
+    carry_cents = _lookback_surplus_cents(
+        transactions, start, carry_days, refunded_ids, rules,
+    )
+    out_cents = sum(_cents(txn["debit"]) for txn in pool)
+    covered = in_cents + carry_cents
+    counted_cents = max(out_cents - covered, 0)
+    kept = list(merchant) + list(forced_spend)
+    dropped = list(forced_pass)
+    if covered > 0:
+        dropped.extend(pool)
+        if counted_cents > 0:
+            when = end
+            if end == datetime.date.max and pool:
+                when = max(txn["date"] for txn in pool)
+            kept.append(_remainder_row(_dollars(counted_cents), when))
+        left_out = out_cents + sum(_cents(txn["debit"]) for txn in forced_pass) - counted_cents
+    else:
+        kept.extend(pool)
+        left_out = sum(_cents(txn["debit"]) for txn in forced_pass)
+
+    excluded = _excluded_transfer_summary(dropped, left_out)
+    transfers_net = _transfer_net_dict(in_cents, out_cents, carry_cents)
+    reselling = _revolut_transfer_net(extra_inflows, start, end, carry_days)
+    if reselling["in"] or reselling["out"]:
+        transfers_net["reselling"] = reselling
+    return kept, excluded, transfers_net
 
 
 # ── Spending analysis ─────────────────────────────────────────────────────────
@@ -1033,17 +1148,17 @@ def analyse_spending(transactions, days=7, extra_inflows=None):
     Own-account transfers (see _is_internal_spend) are left out of the totals,
     the category breakdown, and the flagged debits. Refund credits that match
     a counted debit (see the refund rules above) reduce that debit's category
-    and the total. Pass-through withdrawals are left out too and listed on
+    and the total. Person-to-person transfers are netted and reported on
+    transfers_net; withdrawals that dropped out are listed on
     excluded_transfers. That is the same filter summarise_spending uses for
-    GET /finance. extra_inflows defaults to external Revolut transfers.
+    GET /finance. extra_inflows defaults to external Revolut transfers, which
+    are netted separately and do not reduce this total.
     """
     today    = datetime.datetime.now(TIMEZONE).date()
     cutoff   = today - datetime.timedelta(days=days)
-    if extra_inflows is None:
-        extra_inflows = revolut_passthrough_inflows()
 
-    recent, excluded = _net_spending_debits(
-        transactions, cutoff, datetime.date.max, extra_inflows,
+    recent, excluded, transfers_net = _net_spending_debits(
+        transactions, cutoff, today, extra_inflows,
     )
 
     # Category totals
@@ -1065,6 +1180,7 @@ def analyse_spending(transactions, days=7, extra_inflows=None):
         "transactions":     recent,
         "days":             days,
         "excluded_transfers": excluded,
+        "transfers_net":    transfers_net,
     }
 
 
@@ -1707,17 +1823,18 @@ def summarise_spending(transactions, start, end, weekly_budget, extra_inflows=No
     (internet withdrawals, transfers, Osko/Sct withdrawals to an owner name,
     Revolut card top-ups). A refund credit that matches a counted debit
     reduces that category and total_spend, so the category totals still add
-    up to total_spend. Pass-through withdrawals are omitted and reported on
-    excluded_transfers (count, total, items) so they can be audited.
+    up to total_spend. Person-to-person transfers on this account are netted:
+    only a positive remainder is spending. transfers_net has in, out,
+    carry_in, net, and counted for that account. excluded_transfers lists
+    the withdrawals that were not counted at their own amount.
     Descriptions on flagged rows are the full bank line.
     Callers that send this to an external agent must redact sensitive text
     before shortening it, so a number cut at a character limit cannot leave
     a short digit fragment. extra_inflows defaults to external Revolut
-    transfers read from REVOLUT_CSV.
+    transfers read from REVOLUT_CSV. Those are reported on
+    transfers_net.reselling and are not added to total_spend.
     """
-    if extra_inflows is None:
-        extra_inflows = revolut_passthrough_inflows()
-    recent, excluded = _net_spending_debits(
+    recent, excluded, transfers_net = _net_spending_debits(
         transactions, start, end, extra_inflows,
     )
 
@@ -1757,6 +1874,7 @@ def summarise_spending(transactions, start, end, weekly_budget, extra_inflows=No
         "weekly_equivalent": round(total * 7.0 / span_days, 2) if span_days else 0.0,
         "flagged": flagged[:4],
         "excluded_transfers": excluded,
+        "transfers_net": transfers_net,
     }
 
 
