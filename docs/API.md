@@ -280,19 +280,49 @@ otherwise). `budget_for_range` prorates that budget by `days / 7`.
 is the Back Tap total for that span (category totals and an unmatched count,
 not the raw notes).
 
-`excluded_transfers` is money that arrived and left again, so it is not in
-`total_spend`, `by_category`, or `flagged`. It has `count`, `total`, and
-`items` (`date`, `amount`, redacted `description`). A match is an
-uncategorised Osko or Sct withdrawal to someone else, covered by Osko or
-Sct deposits on the everyday account and/or external Revolut transfers, of
-the same amount or a sum of up to four legs. The deposit has to be on the
-withdrawal date or up to `spending.passthrough_window_days` before it
-(default 7, range 1–30). `spending.passthrough_tolerance` (default $0,
-max $20) is how far the totals may differ.
-`spending.passthrough_max_group` (default 4, range 2–6) caps each side.
-Card purchases, categorised Oskos (tickets, shops), salary, internet
-deposits from his own accounts, and Revolut top-ups are not matches.
-Own-account transfers and refunds still use their existing rules.
+`transfers_net` is the person-to-person total on the everyday account for
+this window. `in` is Osko, Sct, PayID, and NPP deposits. `out` is the
+matching withdrawals that are still uncategorised (a ticket or a shop
+coded to a real category is spending, not part of `out`). `carry_in` is
+inflow left over from the previous `spending.transfer_carry_days` days
+(default 7, range 0–30; 0 turns the lookback off) after that lookback's
+own withdrawals have been subtracted. `net` is `out - in - carry_in` and
+may be negative. `counted` is `max(net, 0)`. Only `counted` is added to
+`total_spend`, as Other. A negative net does not reduce card purchases,
+direct debits, or BPAY.
+
+Salary, payroll, direct credits, tutoring, identified pokemon-sale income,
+and refund credits are not part of `in`, so pay does not cancel a
+withdrawal. A credit already used as a refund is not used again.
+Own-account moves (internet withdrawals, lines described as a transfer,
+Osko/Sct to an owner name, Revolut card top-ups) stay out of spending and
+out of the net. External Revolut transfers are a different account: they
+are netted under `transfers_net.reselling` (same fields) and that
+`counted` is not added to `total_spend`. The older
+`spending.passthrough_window_days`, `passthrough_tolerance`, and
+`passthrough_max_group` settings are no longer read.
+
+`excluded_transfers` lists the withdrawals that were not counted at their
+own amount (`count`, `total`, `items` with `date`, `amount`, redacted
+`description`). `total` is the dollars kept out of spending. When the
+whole pool was covered, `total` equals the sum of `items`.
+
+To force one line, edit `data/transfer_overrides.json` on the VPS
+(`/home/jarvis/jarvis/data/transfer_overrides.json`). The agent reads it
+on the next request; a restart is not required. `data/` is not in git.
+
+```json
+{
+  "rules": [
+    {"date": "2026-10-25", "amount": 80.00, "description": "Landlord", "treat": "spending"},
+    {"date": "2026-10-26", "amount": 4932.00, "description": "F40S", "treat": "pass-through"}
+  ]
+}
+```
+
+`treat` `spending` counts that withdrawal in full and leaves it out of the
+net. `treat` `pass-through` drops it even when the net would have counted
+it. Date, amount to the cent, and a description fragment all have to match.
 
 #### Savings
 

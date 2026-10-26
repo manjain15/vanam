@@ -1284,8 +1284,9 @@ def get_spending_payload(start, end):
     Everyday-account spend for an inclusive range, versus the weekly budget.
 
     Category totals use finance_tracker.summarise_spending. Live Back Tap
-    totals are included when the window reaches today. excluded_transfers
-    lists pass-through withdrawals omitted from the total. No raw
+    totals are included when the window reaches today. transfers_net is the
+    person-to-person in, out, net, and counted remainder.
+    excluded_transfers lists withdrawals left out of the total. No raw
     descriptions leave this function without account-number redaction.
     """
     import finance_tracker
