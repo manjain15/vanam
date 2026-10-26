@@ -544,8 +544,10 @@ def _attach_sheet_commission(classified, start, end):
     """Set resale income from commission rows. Leave the bank figures alone.
 
     A missing sheet leaves income as None. It does not fall back to
-    inflows minus outflows. The note states the gap when the sheet and
-    the bank lines disagree. It does not choose a reason.
+    inflows minus outflows. A gap between the sheet and this week's bank
+    lines is normal, because a resale can span weeks. The note calls that
+    gap what is not in this week's bank lines. It is not an error and it
+    is not money owed. The window is not widened to close it.
     """
     from reselling_tracker import commissions_for_window
 
@@ -566,7 +568,7 @@ def _attach_sheet_commission(classified, start, end):
     known_sold = bool(rows) and all(row["sold"] is not None for row in rows)
     sold = round(sum(row["sold"] for row in rows), 2) if known_sold else None
     due = round(sold - commission, 2) if sold is not None else None
-    not_forwarded = round(due - forwarded, 2) if due is not None else None
+    not_in_week = round(due - forwarded, 2) if due is not None else None
     parties = " and ".join(dict.fromkeys(row["party"] for row in rows if row.get("party")))
     difference = None
     note = None
@@ -577,26 +579,21 @@ def _attach_sheet_commission(classified, start, end):
             "due": due,
             "party": parties or None,
             "forwarded": forwarded,
-            "not_forwarded": not_forwarded,
+            "not_in_week": not_in_week,
             "bank_net": bank_net,
         }
-        if sold is not None and (not_forwarded != 0 or bank_net != commission):
+        if sold is not None and not_in_week != 0:
             note = (
                 f"Sold {_money_text(sold)}, commission {_money_text(commission)}, "
                 f"so {_money_text(due)} due to {parties}. "
-                f"Forwarded {_money_text(forwarded)} in the bank lines, "
-                f"so {_money_text(not_forwarded)} not seen as forwarded."
+                f"Forwarded {_money_text(forwarded)} in this week's bank lines. "
+                f"{_money_text(abs(not_in_week))} is not in this week's bank lines."
             )
-            if not_forwarded > 0:
-                note += (
-                    " Buyers may have paid outside this week or into another account, "
-                    "or the balance may still be owed."
-                )
         elif bank_net != commission:
             note = (
                 f"Sheet commission {_money_text(commission)}. "
-                f"Bank lines net to {_money_text(bank_net)}. "
-                f"Difference {_money_text(round(commission - bank_net, 2))}."
+                f"This week's bank lines net to {_money_text(bank_net)}. "
+                f"{_money_text(abs(round(commission - bank_net, 2)))} is not in this week's bank lines."
             )
     resale["income"] = commission
     resale["commission"] = [

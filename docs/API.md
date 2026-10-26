@@ -286,9 +286,11 @@ checked. Those lines are left out of `total_spend`. They are not income.
 a sold row whose name contains "commission". The amount is that row's Net
 P/L. A sale price that is not the same number is the stock sold, and
 `difference.due` is sold minus commission. `difference.forwarded` is the
-bank `out`. `difference.not_forwarded` is due minus forwarded. `note`
-states that gap when the sheet and the bank disagree, and does not choose
-why. `income` is null when the sheet could not be read. It is not the bank
+bank `out` inside this window. `difference.not_in_week` is due minus
+forwarded: the part that is not in this week's bank lines. A weekly gap
+is expected, because a resale can span weeks. It is not an error and it
+is not money owed. The window is not widened to close it. `note` says
+that in those words. `income` is null when the sheet could not be read. It is not the bank
 residual. The same commission is omitted from `reselling.inventory.net_pl`,
 which reports it once as `commission`.
 
