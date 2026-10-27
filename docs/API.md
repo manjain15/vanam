@@ -277,7 +277,10 @@ The weekly rule:
    match. A refund cannot push spending below zero, cannot reduce a later
    purchase, and is never income.
 2. Transfers (Osko, Sct, PayID, NPP, or a line that says `transfer`, in
-   or out) never count as spending and never count as income.
+   or out) never count as spending. A transfer in is income only when its
+   description contains a phrase listed under `spending.income_payers` in
+   `term_context.json` (wages paid by Osko or Sct, e.g. `["acme tutoring pay"]`).
+   No other transfer is ever income.
 3. Spends logged with the Back Tap shortcut (`POST /spend`, stored in
    `data/live_spend.jsonl`) count in full, in the category given, when
    their date is inside the window. They are transfer purchases, which
@@ -287,8 +290,9 @@ The weekly rule:
 (always false), `count`, `total_in`, `total_out`, and `items` (`date`,
 `amount`, `direction`, redacted `description`). Own-account moves are not
 on it. `logged` is how much of `total_spend` came from Back Tap entries
-(`count`, `total`). `income` is direct credits and other credits that are
-not transfers or card refunds.
+(`count`, `total`). `income` is direct credits, other credits that are not
+transfers or card refunds, and transfers in from a listed income payer
+(`source` is the matching phrase).
 
 `commission` is the reselling sheet (`manj`, tab `general`): sold rows
 whose name contains "commission" and whose sale date is inside the window.

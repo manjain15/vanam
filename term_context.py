@@ -380,10 +380,6 @@ DEFAULT_OWN_ACCOUNT_RULES = {
 # Override with spending.refund_window_days in term_context.json (1–60).
 DEFAULT_REFUND_WINDOW_DAYS = 14
 
-# Unused transfer inflows this many days before the report can offset
-# this period's person-to-person outflows. 0 disables the lookback.
-# Override with spending.transfer_carry_days in term_context.json (0–30).
-DEFAULT_TRANSFER_CARRY_DAYS = 7
 
 
 def _normalise_deadline(raw) -> str:
@@ -469,27 +465,21 @@ def get_refund_window_days() -> int:
     return days
 
 
-def get_transfer_carry_days() -> int:
+def get_income_payers() -> list:
     """
-    Days before the report start whose unused transfer inflows can carry in.
+    Phrases that mark a transfer in as income, such as wages paid by Osko.
 
-    Reads spending.transfer_carry_days from term_context.json. 0 disables
-    the lookback. Missing or out-of-range values (below 0 or above 30)
-    fall back to DEFAULT_TRANSFER_CARRY_DAYS (7). The report window itself
-    is unchanged: only an inflow surplus left after that lookback's own
-    outflows can reduce this period.
+    Reads spending.income_payers from term_context.json: a list of strings
+    matched case-insensitively against the bank description. Missing or
+    malformed values give an empty list, so no transfer counts as income.
     """
     raw = load_context().get("spending") or {}
     if not isinstance(raw, dict):
-        return DEFAULT_TRANSFER_CARRY_DAYS
-    value = raw.get("transfer_carry_days", DEFAULT_TRANSFER_CARRY_DAYS)
-    try:
-        days = int(value)
-    except (TypeError, ValueError):
-        return DEFAULT_TRANSFER_CARRY_DAYS
-    if days < 0 or days > 30:
-        return DEFAULT_TRANSFER_CARRY_DAYS
-    return days
+        return []
+    payers = raw.get("income_payers") or []
+    if not isinstance(payers, list):
+        return []
+    return [" ".join(str(p).lower().split()) for p in payers if str(p).strip()]
 
 
 def update_finance_goals(goals: dict):

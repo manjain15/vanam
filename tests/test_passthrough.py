@@ -158,6 +158,34 @@ def test_a_large_deposit_is_not_income_and_does_not_reduce_spending():
     assert summary["transfers"]["total_in"] == 5200
 
 
+def test_pay_by_sct_from_a_listed_payer_is_income(tmp_path, monkeypatch):
+    monkeypatch.setattr(term_context, "CONTEXT_FILE", tmp_path / "term_context.json")
+    (tmp_path / "term_context.json").write_text(json.dumps({
+        "spending": {"income_payers": ["Acme Tutoring  Pay"]},
+    }))
+    pay = "Sct Deposit 23Oct18:55 Acme Tutoring Pay Jo Citizen"
+    txns = _cards() + [
+        _txn(_day(23), pay, credit=640.00),
+        _txn(_day(24), "Osko Deposit 24Oct Buyer F40", credit=5200),
+        _txn(_day(24), "Osko Withdrawal 24Oct Acme Tutoring Pay Refund", debit=10),
+    ]
+    summary = _summary(txns)
+    assert summary["total_spend"] == CARDS
+    assert summary["income"] == [{
+        "date": "2026-10-23", "description": pay, "amount": 640.0, "source": "acme tutoring pay",
+    }]
+    assert summary["transfers"]["total_in"] == 5200
+    assert summary["transfers"]["total_out"] == 10
+
+
+def test_no_listed_payers_means_no_transfer_is_income(tmp_path, monkeypatch):
+    monkeypatch.setattr(term_context, "CONTEXT_FILE", tmp_path / "term_context.json")
+    txns = [_txn(_day(23), "Sct Deposit 23Oct Acme Tutoring Pay Jo Citizen", credit=640.00)]
+    summary = _summary(txns)
+    assert summary["income"] == []
+    assert summary["transfers"]["total_in"] == 640.0
+
+
 def test_a_person_paying_back_does_not_reduce_card_spending():
     txns = [
         _txn(_day(22), "Visa Purchase 22Oct18:35 Knockout Tickets", debit=120),
