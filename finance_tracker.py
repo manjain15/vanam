@@ -48,7 +48,7 @@ import pytz
 import config
 
 try:
-    from live_spend import get_live_summary
+    from live_spend import entries_between
     LIVE_SPEND_AVAILABLE = True
 except Exception:
     LIVE_SPEND_AVAILABLE = False
@@ -103,9 +103,8 @@ except Exception:
 
 
 # ── Category rules ────────────────────────────────────────────────────────────
-# Keywords suggest a category for display. They do not decide whether a
-# line is spending. Who the line is with, and any resale label, live in
-# counterparties.py.
+# Keywords pick the category. They do not decide whether a line is
+# spending. The rail does: see _classified.
 
 CATEGORY_RULES = [
     ("Food & dining", [
@@ -206,11 +205,28 @@ def _normalise_desc(description):
 def _is_internal_spend(description):
     """True for a move between the owner's own accounts, which is not spending.
 
-    Internet withdrawals, transfers to or from savings, Osko/Sct to his own
-    name, and Revolut card top-ups. The bare word 'transfer' is not enough.
+    Internet withdrawals and deposits, transfers to or from savings, Osko/Sct
+    to or from his own name, and Revolut card top-ups. The bare word
+    'transfer' is not enough, and a bare 'revolut' on an Osko is not self.
     """
-    import counterparties
-    return counterparties.is_self(description)
+    desc = _normalise_desc(description)
+    if "internet withdrawal" in desc or "internet deposit" in desc:
+        return True
+    if "from 0000" in desc or "to 0000" in desc:
+        return True
+    if re.search(r"\btransfer (to|from) savings\b", desc):
+        return True
+    if "sent from revolut" in desc:
+        return True
+    rules = get_own_account_rules()
+    names = [str(name).strip().lower() for name in (rules.get("owner_names") or []) if str(name).strip()]
+    markers = rules.get("withdrawal_markers") or []
+    named = any(name in desc for name in names)
+    if named and any(marker in desc for marker in markers):
+        return True
+    if named and "deposit" in desc:
+        return True
+    return _is_own_card_topup(desc, rules)
 
 
 def categorise(description):
@@ -512,14 +528,229 @@ def _cents(amount):
     return int(round(float(amount) * 100))
 
 
-def _classified(transactions, start, end):
-    """Spending, income, resale, and unreviewed lines for an inclusive window.
+# ── Weekly spending rule ──────────────────────────────────────────────────────
+# Card, BPAY and direct debit lines count, in their category. Osko, Sct,
+# PayID, NPP and other transfers never count as spending or as income;
+# they are listed, marked not counted. Spends logged with the Back Tap
+# shortcut (live_spend.py) count as logged. A card refund reduces an
+# earlier card purchase at the same merchant inside the refund window.
 
-    Counterparties and per-line resale labels decide this. There is no
-    rail-wide net and no surname matcher.
+TRANSFER_RAIL = "transfer"
+_SPEND_RAILS = ("card", "bpay", "direct_debit", "other")
+_REFUND_HINTS = ("refund", "reversal", "chargeback", "visa credit", "eftpos credit")
+_MERCHANT_NOISE = {
+    "visa", "eftpos", "purchase", "debit", "credit", "refund", "reversal",
+    "chargeback", "pty", "ltd", "the", "and", "pending", "online",
+    "sydney", "melbourne", "australia", "nsw", "london",
+    "brisbane", "perth", "adelaide", "hobart", "canberra",
+}
+
+
+def rail_of(description):
+    """Coarse rail for a St. George line.
+
+    self, card, card_credit, bpay, direct_debit, direct_credit, transfer,
+    or other. Any Osko, Sct, PayID, NPP or 'transfer' line is a transfer.
     """
-    import counterparties
-    return counterparties.classify(transactions, start, end)
+    desc = _normalise_desc(description)
+    if _is_internal_spend(description):
+        return "self"
+    if "visa" in desc or "eftpos" in desc:
+        if any(hint in desc for hint in _REFUND_HINTS):
+            return "card_credit"
+        return "card"
+    if "bpay" in desc:
+        return "bpay"
+    if "direct debit" in desc:
+        return "direct_debit"
+    if "direct credit" in desc or re.search(r"\b(payroll|salary|wages)\b", desc):
+        return "direct_credit"
+    if re.search(r"\b(osko|sct|payid|npp|transfer)\b", desc):
+        return TRANSFER_RAIL
+    return "other"
+
+
+def _event_dt(txn):
+    """When the line happened, using a clock glued to the description date.
+
+    Rows with no clock sit at 12:00, so a 09:11 refund falls before a 10:30
+    repurchase on the same morning.
+    """
+    desc = _normalise_desc(txn.get("description") or "")
+    match = re.search(r"\d{2}[a-z]{3}(\d{2}):(\d{2})", desc)
+    if not match:
+        match = re.search(r"\b(\d{2}):(\d{2})\b", desc)
+    if match:
+        hour, minute = int(match.group(1)), int(match.group(2))
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            return datetime.datetime.combine(txn["date"], datetime.time(hour, minute))
+    return datetime.datetime.combine(txn["date"], datetime.time(12, 0))
+
+
+def _merchant_tokens(description):
+    """Merchant words on a card line: 4+ letters, no rail, date or place words."""
+    desc = _normalise_desc(description)
+    desc = re.sub(r"\d{2}[a-z]{3}(?:\d{2}:\d{2})?", " ", desc)
+    desc = re.sub(r"[^a-z]+", " ", desc)
+    return {token for token in desc.split() if len(token) >= 4 and token not in _MERCHANT_NOISE}
+
+
+def _net_card_refunds(spends, refunds, window_days):
+    """Reduce earlier card purchases at the same merchant by each card refund.
+
+    Amounts do not have to match. The latest earlier purchase is reduced
+    first. A refund never pushes a purchase below zero, and what it does
+    not use is dropped: it is not income.
+    """
+    for refund in sorted(refunds, key=_event_dt):
+        tokens = _merchant_tokens(refund["description"])
+        left = refund["amount"]
+        when = _event_dt(refund)
+        candidates = [
+            spend for spend in spends
+            if spend["remaining"] > 0
+            and tokens & _merchant_tokens(spend["description"])
+            and _event_dt(spend) <= when
+            and (when.date() - spend["date"]).days <= window_days
+        ]
+        candidates.sort(key=_event_dt, reverse=True)
+        for spend in candidates:
+            if left <= 0:
+                break
+            take = min(left, spend["remaining"])
+            spend["remaining"] = round(spend["remaining"] - take, 2)
+            left = round(left - take, 2)
+
+
+def _logged_spends(start, end):
+    """Back Tap entries dated inside the window, as spending lines."""
+    if not LIVE_SPEND_AVAILABLE:
+        return []
+    try:
+        entries = entries_between(start, end)
+    except Exception as exc:
+        print(f"⚠️  logged spends unavailable: {exc}")
+        return []
+    return [
+        {
+            "date": entry["date"],
+            "description": entry.get("note") or "Logged spend",
+            "debit": round(float(entry["amount"]), 2),
+            "credit": 0.0,
+            "category": entry["category"],
+            "logged": True,
+        }
+        for entry in entries
+    ]
+
+
+def _classified(transactions, start, end):
+    """Spending, income, and not-counted transfers for an inclusive window.
+
+    Own-account moves and pending rows are dropped. Card, BPAY, direct
+    debit and other debits are spending, net of card refunds. Transfers
+    go on their own list. Direct credits and other non-transfer credits
+    are income. Logged spends are added to spending as they are.
+    """
+    window_days = get_refund_window_days()
+    spends, refunds, income, transfers = [], [], [], []
+    for txn in transactions:
+        if txn.get("pending"):
+            continue
+        day = txn.get("date")
+        if day is None or day < start or day > end:
+            continue
+        debit = float(txn.get("debit") or 0)
+        credit = float(txn.get("credit") or 0)
+        if debit <= 0 and credit <= 0:
+            continue
+        description = txn.get("description") or ""
+        rail = rail_of(description)
+        if rail == "self":
+            continue
+        direction = "out" if debit > 0 else "in"
+        amount = round(debit if direction == "out" else credit, 2)
+        row = {"date": day, "description": description, "amount": amount}
+        if rail == TRANSFER_RAIL:
+            transfers.append({**row, "date": day.isoformat(), "direction": direction})
+        elif direction == "out" and rail in _SPEND_RAILS:
+            category = categorise(description)
+            spends.append({**row, "remaining": amount, "category": category})
+        elif rail == "card_credit" or rail == "card":
+            refunds.append(row)
+        else:
+            income.append({**row, "source": "Direct credit" if rail == "direct_credit" else "Other"})
+
+    _net_card_refunds(spends, refunds, window_days)
+    spending = [
+        {
+            "date": spend["date"],
+            "description": spend["description"],
+            "debit": spend["remaining"],
+            "credit": 0.0,
+            "category": spend["category"],
+        }
+        for spend in spends
+        if spend["remaining"] > 0
+    ]
+    spending.extend(_logged_spends(start, end))
+    transfers.sort(key=lambda item: (item["date"], -item["amount"]))
+    return {"spending": spending, "income": income, "transfers": transfers}
+
+
+def _load_sheet_items():
+    """Reselling sheet rows, or None when the sheet cannot be read."""
+    try:
+        from reselling_tracker import load_items
+        return load_items()
+    except Exception as exc:
+        print(f"⚠️  resale commission: sheet unavailable: {exc}")
+        return None
+
+
+def _sheet_commission(start, end):
+    """Commission income for the window, from the reselling sheet only.
+
+    Rows with a sale date inside the window count once. Bank transfers are
+    never the commission. total is None when the sheet cannot be read.
+    """
+    from reselling_tracker import commissions_for_window
+
+    items = _load_sheet_items()
+    if items is None:
+        return {"total": None, "rows": []}
+    rows = commissions_for_window(items, start, end)
+    return {
+        "total": round(sum(row["amount"] for row in rows), 2),
+        "rows": [
+            {
+                "name": row["name"],
+                "category": row["category"],
+                "amount": row["amount"],
+                "sold": row["sold"],
+                "due": row["due"],
+                "party": row["party"],
+            }
+            for row in rows
+        ],
+    }
+
+
+def _transfer_summary(transfers):
+    """Transfers in the window. Listed for reference; never in any total."""
+    return {
+        "counted": False,
+        "count": len(transfers),
+        "total_in": round(sum(item["amount"] for item in transfers if item["direction"] == "in"), 2),
+        "total_out": round(sum(item["amount"] for item in transfers if item["direction"] == "out"), 2),
+        "items": transfers,
+    }
+
+
+def _logged_summary(spending):
+    """How much of the spending came from Back Tap logged entries."""
+    logged = [txn for txn in spending if txn.get("logged")]
+    return {"count": len(logged), "total": round(sum(txn["debit"] for txn in logged), 2)}
 
 
 # ── Spending analysis ─────────────────────────────────────────────────────────
@@ -529,10 +760,10 @@ def analyse_spending(transactions, days=7, extra_inflows=None):
     """
     Analyses spending from the everyday account over the last N days.
 
-    Uses the same classification as summarise_spending. Own-account moves
-    are left out. A later credit from the same counterparty reduces that
-    debit. Unreviewed transfers and resale labels are reported beside the
-    total. extra_inflows is ignored: another account cannot cancel this one.
+    Uses the same rule as summarise_spending: card, BPAY and direct debit
+    lines net of card refunds, plus logged spends. Transfers are reported
+    beside the total, not in it. extra_inflows is ignored: another account
+    cannot cancel this one.
     """
     del extra_inflows
     today = datetime.datetime.now(TIMEZONE).date()
@@ -547,7 +778,6 @@ def analyse_spending(transactions, days=7, extra_inflows=None):
 
     big_transactions = [txn for txn in recent if txn["debit"] >= 80]
     total_spend = sum(txn["debit"] for txn in recent)
-    unreviewed = classified["unreviewed"]
 
     return {
         "category_totals": category_totals,
@@ -556,13 +786,9 @@ def analyse_spending(transactions, days=7, extra_inflows=None):
         "transaction_count": len(recent),
         "transactions": recent,
         "days": days,
-        "unreviewed": {
-            "count": len(unreviewed),
-            "total": round(sum(item["amount"] for item in unreviewed), 2),
-            "items": unreviewed,
-        },
-        "unfinished": classified["unfinished"],
-        "resale": classified["resale"],
+        "logged": _logged_summary(recent),
+        "transfers": _transfer_summary(classified["transfers"]),
+        "commission": _sheet_commission(cutoff, today),
     }
 
 
@@ -950,7 +1176,7 @@ def _reselling_card(txn):
     """True for a card purchase or card refund on the reselling account.
 
     A transfer is not a sale and not a stock purchase. Buyer payments and
-    forwards belong on the everyday account as labelled resale lines.
+    forwards are not reselling cashflow.
     Card purchases stay here because this account's card is how stock is
     bought. Own top-ups are already marked internal by the parser.
     """
@@ -968,13 +1194,10 @@ def analyse_reselling(days=30):
     """
     Card purchases on the reselling account, net of card refunds.
 
-    Transfers in and out are not sales and not stock. Sale proceeds that
-    landed in the everyday account are resale income on the spending
-    summary once those lines are labelled. Uses finance/revolut.csv when
-    present, otherwise card-like rows on the St. George investing.csv.
+    Transfers in and out are not sales and not stock. Commission income is
+    the reselling sheet. Uses finance/revolut.csv when present, otherwise
+    card-like rows on the St. George investing.csv.
     """
-    import counterparties
-
     today = datetime.datetime.now(TIMEZONE).date()
     cutoff = today - datetime.timedelta(days=days)
 
@@ -992,8 +1215,7 @@ def analyse_reselling(days=30):
         recent = [
             txn for txn in txns
             if txn["date"] >= cutoff
-            and not counterparties.is_self(txn.get("description") or "")
-            and counterparties.rail_of(txn.get("description") or "") in ("card", "card_credit")
+            and rail_of(txn.get("description") or "") in ("card", "card_credit")
         ]
         balance = get_latest_balance(INVESTING_CSV)
         available = INVESTING_CSV.exists()
@@ -1024,11 +1246,11 @@ def is_monthly_review_day():
 
 def analyse_income(transactions, days=30):
     """
-    Income over the last N days: wages, small gifts, and resale commission.
+    Income over the last N days: direct credits and other non-transfer credits.
 
-    A credit from someone Manav has already paid reduces that spending
-    instead of counting here. A large unexplained deposit is unreviewed,
-    not income. Resale-labelled lines contribute only their leftover.
+    Transfers in (Osko, Sct, PayID, NPP) are never income automatically.
+    Card refunds reduce spending instead. Commission is not added here; it
+    is the reselling sheet figure on the spending summary.
     """
     today = datetime.datetime.now(TIMEZONE).date()
     cutoff = today - datetime.timedelta(days=days)
@@ -1094,15 +1316,21 @@ def get_finance_summary():
     over_budget = spending["total_spend"] > weekly_budget
     budget_str = f"  (⚠ over ~${weekly_budget:.0f}/week budget)" if over_budget else f"  (within ~${weekly_budget:.0f}/week budget)"
     lines.append(f"  {'Total spend':<18} ${spending['total_spend']:.2f}{budget_str}")
-    unreviewed = spending.get("unreviewed") or {}
-    if unreviewed.get("count"):
+    logged = spending.get("logged") or {}
+    if logged.get("count"):
         lines.append(
-            f"  {'Unreviewed':<18} ${unreviewed['total']:.2f}"
-            f"  ({unreviewed['count']} transfers, week unfinished)"
+            f"  {'Includes logged':<18} ${logged['total']:.2f}"
+            f"  ({logged['count']} Back Tap entries)"
         )
-    resale_income = (spending.get("resale") or {}).get("income") or 0
-    if resale_income:
-        lines.append(f"  {'Resale income':<18} ${resale_income:.2f}")
+    transfers = spending.get("transfers") or {}
+    if transfers.get("count"):
+        lines.append(
+            f"  {'Transfers':<18} ${transfers['total_out']:.2f} out, "
+            f"${transfers['total_in']:.2f} in  (not counted)"
+        )
+    commission = spending.get("commission") or {}
+    if commission.get("total"):
+        lines.append(f"  {'Resale commission':<18} ${commission['total']:.2f}")
 
     # Flag big transactions
     if spending["big_transactions"]:
@@ -1111,24 +1339,6 @@ def get_finance_summary():
             lines.append(f"    • {t['date'].strftime('%d %b')}  ${t['debit']:.2f}  {t['description'][:40]}")
 
     lines.append("")
-
-    # ── Live-logged spend (iPhone Back Tap) ───────────────────────────────────
-    if LIVE_SPEND_AVAILABLE:
-        try:
-            live = get_live_summary(days=7, transactions=everyday_txns)
-        except Exception:
-            live = {"available": False}
-        if live["available"]:
-            lines.append("LIVE-LOGGED (Back Tap, last 7 days):")
-            lines.append(f"  {'Total':<18} ${live['total']:.2f}  ({live['count']} entries)")
-            for cat, amt in sorted(live["by_category"].items(), key=lambda x: -x[1]):
-                lines.append(f"  {cat:<18} ${amt:.2f}")
-            if live["matched"] is not None:
-                lines.append(f"  Reconciled: {live['matched']}/{live['count']} matched in bank CSV")
-                for e in live["unmatched"][:3]:
-                    note = f" — {e['note']}" if e["note"] else ""
-                    lines.append(f"    ⚠ not in CSV yet: ${e['amount']:.2f} {e['category']}{note}")
-            lines.append("")
 
     # ── Income tracking ───────────────────────────────────────────────────────
     income = analyse_income(everyday_txns, days=30)
@@ -1206,12 +1416,12 @@ def summarise_spending(transactions, start, end, weekly_budget, extra_inflows=No
     """
     Category totals and weekly-budget comparison for an inclusive date range.
 
-    Own-account moves are dropped. A credit from the same counterparty
-    reduces an earlier debit inside the refund window. Amounts do not have
-    to match. Lines labelled resale are netted only against each other, and
-    the leftover is resale income. Unknown transfers, and transfers of $500
-    or more that are not labelled, are listed on unreviewed and the week is
-    unfinished. They are not in total_spend and they do not reduce it.
+    Card, BPAY and direct debit lines count in their category, net of card
+    refunds at the same merchant inside the refund window. Back Tap logged
+    spends dated in the range are added as they are. Own-account moves and
+    Revolut card top-ups are dropped. Transfers (Osko, Sct, PayID, NPP) are
+    listed under transfers with counted false; they are never spending or
+    income. Commission is the reselling sheet rows dated in the range.
     Descriptions on flagged rows are the full bank line. extra_inflows is
     ignored.
     """
@@ -1242,7 +1452,6 @@ def summarise_spending(transactions, start, end, weekly_budget, extra_inflows=No
         })
     flagged.sort(key=lambda row: row["amount"], reverse=True)
 
-    unreviewed = classified["unreviewed"]
     income = []
     for txn in classified["income"]:
         day = txn.get("date")
@@ -1264,15 +1473,9 @@ def summarise_spending(transactions, start, end, weekly_budget, extra_inflows=No
         "over_budget": total > window_budget,
         "weekly_equivalent": round(total * 7.0 / span_days, 2) if span_days else 0.0,
         "flagged": flagged[:4],
-        "unreviewed": {
-            "count": len(unreviewed),
-            "total": round(sum(item["amount"] for item in unreviewed), 2),
-            "total_in": round(sum(item["amount"] for item in unreviewed if item["direction"] == "in"), 2),
-            "total_out": round(sum(item["amount"] for item in unreviewed if item["direction"] == "out"), 2),
-            "items": unreviewed,
-        },
-        "unfinished": classified["unfinished"],
-        "resale": classified["resale"],
+        "logged": _logged_summary(recent),
+        "transfers": _transfer_summary(classified["transfers"]),
+        "commission": _sheet_commission(start, end),
         "income": income,
     }
 

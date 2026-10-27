@@ -93,26 +93,26 @@ def test_spending_range_budget_and_redaction(tmp_path, monkeypatch):
     body = res.get_json()
     assert body["available"] is True
     assert body["days"] == 7
-    assert body["by_category"]["Food & dining"] == 22.5
-    assert body["total_spend"] == 112.5
+    # $22.50 Woolworths plus the $5 logged spend.
+    assert body["by_category"]["Food & dining"] == 27.5
+    assert body["total_spend"] == 117.5
     assert body["weekly_budget"] == 75
     assert body["budget_for_range"] == 75
     assert body["over_budget"] is True
-    assert body["weekly_equivalent"] == 112.5
+    assert body["weekly_equivalent"] == 117.5
     assert ACCOUNT not in res.get_data(as_text=True)
     flagged = body["flagged"]
     assert len(flagged) == 1
     assert flagged[0]["amount"] == 90
     assert "[redacted]" in flagged[0]["description"]
-    assert body["live"]["total"] == 5.0
-    assert body["live"]["by_category"]["Food & dining"] == 5.0
-    assert "note" not in body["live"]
+    assert body["logged"] == {"count": 1, "total": 5.0}
+    assert "live" not in body
 
     start = (today - datetime.timedelta(days=40)).isoformat()
     wider = client.get(f"/finance/spending?start={start}&end={today.isoformat()}", headers=AUTH)
     assert wider.status_code == 200
     wide = wider.get_json()
-    assert wide["by_category"]["Food & dining"] == 40.5
+    assert wide["by_category"]["Food & dining"] == 45.5
     assert wide["days"] == 41
     assert wide["budget_for_range"] == round(75 * 41 / 7.0, 2)
     assert ACCOUNT not in wider.get_data(as_text=True)
@@ -245,14 +245,6 @@ def test_finance_bundle_isolates_section_errors(tmp_path, monkeypatch):
     assert ACCOUNT not in res.get_data(as_text=True)
 
 
-def _remember_week_people():
-    """September payees, so their Oskos count and the self-transfers do not."""
-    import counterparties
-    counterparties.upsert_counterparty("R Jaiswal", "person", aliases=["rishi jaiswal"])
-    counterparties.upsert_counterparty("Abhishek Goyal", "person")
-    counterparties.upsert_counterparty("W Tynan", "person")
-
-
 def test_own_account_transfers_are_not_spending(tmp_path, monkeypatch):
     """The 22–28 Sep 2026 pattern: self-Osko and Revolut top-ups are not spend.
 
@@ -261,7 +253,6 @@ def test_own_account_transfers_are_not_spending(tmp_path, monkeypatch):
     """
     today = _today()
     everyday, savings = _patch_files(monkeypatch, tmp_path)
-    _remember_week_people()
     monkeypatch.setattr(agent_api, "load_reselling_inventory", lambda: {"net_pl": 0})
 
     def row(description, debit, credit=""):
@@ -290,13 +281,15 @@ def test_own_account_transfers_are_not_spending(tmp_path, monkeypatch):
     spending = client.get("/finance/spending", headers=AUTH)
     assert spending.status_code == 200
     body = spending.get_json()
-    assert body["total_spend"] == 305.25
+    assert body["total_spend"] == 30.25
     assert body["by_category"] == {
-        "Entertainment": 254.95,
-        "Other": 38.60,
+        "Entertainment": 14.95,
+        "Other": 3.60,
         "Transport": 11.70,
     }
-    assert sorted(item["amount"] for item in body["flagged"]) == [120.0, 120.0]
+    assert body["flagged"] == []
+    assert body["transfers"]["counted"] is False
+    assert body["transfers"]["total_out"] == 275.0
     text = spending.get_data(as_text=True).lower()
     assert "revolut" not in text
     assert "manav" not in text
@@ -305,7 +298,7 @@ def test_own_account_transfers_are_not_spending(tmp_path, monkeypatch):
     bundle = client.get("/finance", headers=AUTH)
     assert bundle.status_code == 200
     bundled = bundle.get_json()
-    assert bundled["spending"]["total_spend"] == 305.25
+    assert bundled["spending"]["total_spend"] == 30.25
     # Everyday rows in this fixture carry a $1,000 balance, so the goal
     # total is the $8,000 savings account plus that everyday balance.
     assert bundled["savings"]["balance"] == 9000.0
@@ -322,13 +315,10 @@ def test_own_account_transfers_are_not_spending(tmp_path, monkeypatch):
         "reselling": bundled["reselling"],
     }).lower()
     assert "revolut" not in elsewhere
-    assert isinstance(bundled["counterparties"], list)
-    assert bundled["spending"]["unreviewed"]["count"] == 0
 
 
 def test_refund_reduces_spending_for_the_week(tmp_path, monkeypatch):
-    """First Knockout $120 is refunded next morning; the repurchase still counts."""
-    _remember_week_people()
+    """A card refund comes off its purchase. Transfers in change nothing."""
     today = _today()
     yesterday = today - datetime.timedelta(days=1)
     everyday, _savings = _patch_files(monkeypatch, tmp_path)
@@ -337,32 +327,22 @@ def test_refund_reduces_spending_for_the_week(tmp_path, monkeypatch):
         return [_dmy(day), description, debit, credit, "1000.00"]
 
     _write_csv(everyday, [
-        row(yesterday, "Osko Withdrawal 22Sep18:35 Knockout R Jaiswal", "120.00"),
-        row(today, "Sct Deposit 23Sep09:11 Rishi Jaiswal", "", "120.00"),
-        row(today, "Osko Withdrawal 23Sep10:30 Knockout R Jaiswal", "120.00"),
-        row(today, "Osko Withdrawal 24Sep Doomsday Tix Abhishek Goyal", "25.00"),
+        row(yesterday, "Visa Purchase 22Sep18:35 Knockout Tickets", "120.00"),
+        row(today, "Visa Refund 23Sep09:11 Knockout Tickets", "", "120.00"),
+        row(today, "Visa Purchase 23Sep10:30 Knockout Tickets", "120.00"),
         row(today, "Visa Purchase 24Sep Playstation London", "14.95"),
-        row(today, "Visa Purchase 24Sep Paypal *Guzmanygome", "3.60"),
-        row(yesterday, "Visa Purchase 22Sep Tfnsw Opal", "6.90"),
-        row(today, "Visa Purchase 23Sep Tfnsw Opal", "4.80"),
         row(today, "Osko Withdrawal 25Sep Change For Hot Wheels W Tynan", "10.00"),
         row(today, "Osko Deposit 24Sep Pokemon Gemma Johnston", "", "390.00"),
-        row(today, "Osko Deposit 24Sep Bank Carlos Santos", "", "135.00"),
-        row(today, "Osko Deposit 25Sep Bank Carlos Santos", "", "54.00"),
-        row(today, "Sct Deposit 26Sep Advance", "", "500.00"),
         row(today, "Osko Deposit 27Sep Nilesh Banga", "", "17000.00"),
     ])
     res = _client().get("/finance/spending", headers=AUTH)
     assert res.status_code == 200
     body = res.get_json()
-    assert body["total_spend"] == 185.25
+    assert body["total_spend"] == 134.95
     assert body["by_category"]["Entertainment"] == 134.95
-    assert body["by_category"]["Transport"] == 11.70
-    assert body["by_category"]["Other"] == 38.60
     assert [item["amount"] for item in body["flagged"]] == [120.0]
-    assert body["unfinished"] is True
-    assert "transfers_net" not in body
-    assert "excluded_transfers" not in body
+    assert body["transfers"]["total_in"] == 17390.0
+    assert body["income"] == []
 
 
 def test_redact_leaves_dates_and_amounts():

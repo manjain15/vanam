@@ -47,10 +47,6 @@ SLASH COMMANDS:
   /addproject name [repo-search] — register one of your GitHub repos
   /remote project instruction [--pr] — kick off a headless remote-work session
   /remotestatus project        — check the latest remote-work session
-  /unreviewed                  — transfers this week that are not in the total
-  /who "Name" person|merchant [large]
-  /label DATE AMOUNT FRAGMENT resale|spending|income
-  /resale                      — label this week's suggested resale lines
 
 Anything else → conversation with Claude, who has your profile + term
 context + memory in scope.
@@ -591,10 +587,6 @@ def cmd_help(_args):
         "/remote project \"instruction\" [--pr] — start a headless remote-work session\n"
         "/remotestatus project — check the latest remote-work session\n"
         "/status — health-check the VPS daemons\n"
-        "/unreviewed — transfers this week that are not in the total\n"
-        "/who \"Name\" person|merchant [large] — remember who that is\n"
-        "/label DATE AMOUNT FRAGMENT resale|spending|income\n"
-        "/resale — label this week's suggested buyer deposits and forwards\n"
         "Block check: reply done, partial or no to the question.\n"
         "(the evening check-in runs in the Grok coach bot at 21:00)\n"
         "\nAnything else → I respond conversationally."
@@ -1020,100 +1012,6 @@ def cmd_outlines(_args):
         return f"Outline refresh failed: {e}"
 
 
-def _recent_finance_window():
-    """The same 7-day window GET /finance uses when no dates are sent."""
-    today = datetime.datetime.now(pytz.timezone(config.TIMEZONE)).date()
-    return today - datetime.timedelta(days=6), today
-
-
-def cmd_unreviewed(_args):
-    """List this week's transfers that are not in the spending total."""
-    try:
-        import finance_tracker
-        start, end = _recent_finance_window()
-        if not finance_tracker.EVERYDAY_CSV.exists():
-            return "No everyday account export."
-        transactions = finance_tracker.parse_stgeorge_csv(finance_tracker.EVERYDAY_CSV)
-        summary = finance_tracker.summarise_spending(transactions, start, end, 75)
-    except Exception as e:
-        return f"Could not load unreviewed transfers: {e}"
-    items = (summary.get("unreviewed") or {}).get("items") or []
-    if not items:
-        return f"Nothing unreviewed for {start.isoformat()} to {end.isoformat()}."
-    lines = [
-        f"Unreviewed {start.isoformat()} to {end.isoformat()} (week unfinished):",
-    ]
-    for item in items:
-        who = item.get("counterparty") or "unknown"
-        hint = " — suggest resale" if item.get("suggestion") == "resale" else ""
-        lines.append(
-            f"{item['date']} {item['direction']} ${item['amount']:.2f} "
-            f"{who} {item['description'][:80]}{hint}"
-        )
-    lines.append('Label one line: /label DATE AMOUNT FRAGMENT resale|spending|income')
-    lines.append("Or /resale to accept the resale suggestion for this week.")
-    return "\n".join(lines)
-
-
-def cmd_who(args):
-    """Remember a person or a shop. /who \"Nilesh Banga\" person [large]."""
-    if len(args) < 2:
-        return 'Usage: /who "Nilesh Banga" person'
-    large = args[-1].lower() == "large"
-    if large:
-        args = args[:-1]
-    if len(args) < 2:
-        return 'Usage: /who "Nilesh Banga" person large'
-    role = args[-1].lower()
-    name = " ".join(args[:-1]).strip()
-    try:
-        import counterparties
-        record = counterparties.upsert_counterparty(
-            name, role, large_transfers="spending" if large else "ask",
-        )
-    except ValueError as e:
-        return str(e)
-    except Exception as e:
-        return f"Could not save {name}: {e}"
-    extra = " Large transfers count as spending." if large else ""
-    return f"Saved {record['name']} as {record['role']}.{extra}"
-
-
-def cmd_label(args):
-    """Label one bank line. /label 2026-10-26 4932 F40S resale."""
-    if len(args) < 4:
-        return "Usage: /label 2026-10-26 4932 F40S resale"
-    purpose = args[-1]
-    fragment = " ".join(args[2:-1]).strip()
-    try:
-        import counterparties
-        rule = counterparties.label_line(args[0], args[1], fragment, purpose)
-    except ValueError as e:
-        return str(e)
-    except Exception as e:
-        return f"Could not label that line: {e}"
-    return f"Labelled {rule['date']} ${rule['amount']:.2f} as {rule['purpose']}."
-
-
-def cmd_resale(_args):
-    """Label this week's suggested resale lines. Buyer deposits and forwards together."""
-    try:
-        import finance_tracker
-        import counterparties
-        start, end = _recent_finance_window()
-        if not finance_tracker.EVERYDAY_CSV.exists():
-            return "No everyday account export."
-        transactions = finance_tracker.parse_stgeorge_csv(finance_tracker.EVERYDAY_CSV)
-        count = counterparties.accept_resale(transactions, start, end)
-    except Exception as e:
-        return f"Could not label resale lines: {e}"
-    if count == 0:
-        return "No resale suggestion this week."
-    return (
-        f"Labelled {count} lines as resale for {start.isoformat()} to {end.isoformat()}."
-    )
-
-
 COMMANDS = {
     "/help":       cmd_help,
     "/start":      cmd_help,
@@ -1136,10 +1034,6 @@ COMMANDS = {
     "/remote":       cmd_remote,
     "/remotestatus": cmd_remotestatus,
     "/addproject":   cmd_addproject,
-    "/unreviewed":   cmd_unreviewed,
-    "/who":          cmd_who,
-    "/label":        cmd_label,
-    "/resale":       cmd_resale,
 }
 
 

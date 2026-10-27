@@ -14,8 +14,9 @@ HOW IT WORKS:
      Set JARVIS_SPEND_HOST=0.0.0.0 in .env to keep posting to the VPS IP,
      or point the shortcut at a tunnel that forwards to 127.0.0.1:5556.
   3. Entry is appended to data/live_spend.jsonl
-  4. finance_tracker.get_finance_summary() shows live-logged spend alongside
-     the CSV data and reconciles the two (CSV remains the source of truth)
+  4. finance_tracker.summarise_spending() adds every entry in the window to
+     the weekly total and its category. These are transfer purchases, which
+     never appear as card lines, so there is no duplicate check.
 
 SETUP:
   python live_spend.py --gen-token   # create data/.spend_token (once)
@@ -171,37 +172,35 @@ def load_entries(days=7):
     return sorted(entries, key=lambda e: e["ts"], reverse=True)
 
 
-# ── Reconciliation against bank CSV ──────────────────────────────────────────
-
-def reconcile(entries, transactions, window_days=4):
-    """
-    Matches live entries against bank CSV transactions by amount (±$0.01)
-    within window_days of the entry date. Each CSV transaction can satisfy
-    at most one entry. Returns (matched_count, unmatched_entries).
-    """
-    used = set()
-    unmatched = []
-    for e in entries:
-        hit = None
-        for i, t in enumerate(transactions):
-            if i in used or t.get("debit", 0) <= 0:
+def entries_between(start, end):
+    """Entries whose local date is inside the inclusive start..end range, oldest first."""
+    if not SPEND_FILE.exists():
+        return []
+    entries = []
+    with open(SPEND_FILE, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
                 continue
-            if (abs(t["debit"] - e["amount"]) <= 0.01
-                    and abs((t["date"] - e["date"]).days) <= window_days):
-                hit = i
-                break
-        if hit is not None:
-            used.add(hit)
-        else:
-            unmatched.append(e)
-    return len(entries) - len(unmatched), unmatched
+            try:
+                e = json.loads(line)
+                ts = datetime.datetime.fromisoformat(e["ts"])
+                if ts.tzinfo is not None:
+                    ts = ts.astimezone(TIMEZONE)
+                e["date"] = ts.date()
+                e["amount"] = float(e["amount"])
+                e["category"] = e.get("category") or "Other"
+            except (json.JSONDecodeError, KeyError, ValueError, TypeError):
+                continue
+            if start <= e["date"] <= end:
+                entries.append(e)
+    return sorted(entries, key=lambda e: e["ts"])
 
 
-def get_live_summary(days=7, transactions=None):
+def get_live_summary(days=7):
     """
     Returns a dict summarising live-logged spend over the last N days:
-      {available, total, count, by_category, matched, unmatched}
-    `transactions` (optional) enables reconciliation against the bank CSV.
+      {available, total, count, by_category, days}
     """
     entries = load_entries(days=days)
     if not entries:
@@ -211,18 +210,12 @@ def get_live_summary(days=7, transactions=None):
     for e in entries:
         by_cat[e["category"]] = by_cat.get(e["category"], 0) + e["amount"]
 
-    matched, unmatched = (None, [])
-    if transactions is not None:
-        matched, unmatched = reconcile(entries, transactions)
-
     return {
         "available":   True,
         "total":       round(sum(e["amount"] for e in entries), 2),
         "count":       len(entries),
         "by_category": by_cat,
         "days":        days,
-        "matched":     matched,
-        "unmatched":   unmatched,
     }
 
 

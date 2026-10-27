@@ -14,6 +14,7 @@ Every category counts, including Membership (store memberships and bot
 subscriptions are real costs). A blank category is recorded as Other.
 """
 
+import re
 import gspread
 from dataclasses import dataclass
 from datetime import datetime
@@ -39,6 +40,7 @@ COL_COST          = 8   # I
 COL_SALE_PRICE    = 9   # J
 COL_PLATFORM      = 10  # K
 COL_FEES          = 11  # L
+COL_NET           = 12  # M  Net P/L as the sheet shows it
 COL_NOTES         = 14  # O
 
 VALID_STATUSES = {"sold", "in stock", "paid pending shipping", "deposit paid"}
@@ -59,6 +61,7 @@ class Item:
     notes: str = ""
     deposit_paid: float = 0.0
     deposit_owing: float = 0.0
+    sheet_net: Optional[float] = None
 
     @property
     def capital_committed(self) -> float:
@@ -113,10 +116,18 @@ def _connect_sheet() -> gspread.Worksheet:
 
 def _safe_float(val: str) -> Optional[float]:
     """Parse a cell value to float, return None if empty/invalid."""
+    number = _signed_float(val)
+    if number is None:
+        return None
+    return abs(number)
+
+
+def _signed_float(val: str) -> Optional[float]:
+    """Parse a cell, keeping the sign. None when the cell is empty."""
     if not val or str(val).strip() in ("", "-", "N/A", "#N/A", "#REF!"):
         return None
     try:
-        return abs(float(str(val).replace("$", "").replace(",", "").strip()))
+        return float(str(val).replace("$", "").replace(",", "").strip())
     except (ValueError, TypeError):
         return None
 
@@ -164,6 +175,7 @@ def _parse_row(row: list) -> Optional[Item]:
 
     deposit_paid  = _safe_float(get(COL_DEPOSIT_PAID)) or 0.0
     deposit_owing = _safe_float(get(COL_DEPOSIT_OWING)) or 0.0
+    sheet_net     = _signed_float(get(COL_NET)) if COL_NET is not None else None
 
     return Item(
         status        = status_raw,
@@ -178,6 +190,7 @@ def _parse_row(row: list) -> Optional[Item]:
         notes         = notes,
         deposit_paid  = deposit_paid,
         deposit_owing = deposit_owing,
+        sheet_net     = sheet_net,
     )
 
 
@@ -240,9 +253,83 @@ def _is_flip(item: Item) -> bool:
     return item.sale_price is not None and item.sale_price > 0
 
 
+def _commission_party(name):
+    """Who the commission row is for. 'banga selling commission' is banga."""
+    text = re.sub(r"\b(selling|sale|sales)\b", " ", name or "", flags=re.IGNORECASE)
+    text = re.sub(r"\bcommission\b", " ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text or (name or "").strip()
+
+
+def commission_record(item: Item):
+    """One commission row, or None when the name is not a commission.
+
+    The amount is the sheet's Net P/L when that cell is filled, otherwise
+    sale price minus fees minus cost. A sale price that is not the
+    commission itself is the stock sold, and what is due is sold minus
+    the commission. The row is not a flip.
+    """
+    if "commission" not in (item.name or "").lower():
+        return None
+    if item.sheet_net is not None:
+        amount = item.sheet_net
+    elif item.net_profit is not None:
+        amount = item.net_profit
+    else:
+        return None
+    amount = round(float(amount), 2)
+    sold = None
+    if item.sale_price is not None and round(float(item.sale_price), 2) != amount:
+        sold = round(float(item.sale_price), 2)
+    due = round(sold - amount, 2) if sold is not None else None
+    sale_date = None
+    if item.sale_date is not None:
+        sale_date = item.sale_date.date().isoformat()
+    return {
+        "name": item.name,
+        "category": item.category or "Other",
+        "amount": amount,
+        "sold": sold,
+        "due": due,
+        "party": _commission_party(item.name),
+        "sale_date": sale_date,
+    }
+
+
+def commissions_for_window(items, start, end):
+    """Commission rows whose sale date is inside this window.
+
+    A row with no sale date is not tied to any week, so it is left out.
+    Dated rows from other weeks stay out, so an old commission is not
+    added again.
+    """
+    rows = []
+    for item in items:
+        record = commission_record(item)
+        if record is None or record["sale_date"] is None:
+            continue
+        day = item.sale_date.date()
+        if start <= day <= end:
+            rows.append(record)
+    return rows
+
+
 def compute_summary(items: list[Item]) -> dict:
-    """P&L totals for the sheet. Every category, including Membership, counts."""
-    sold    = [i for i in items if i.is_sold]
+    """P&L totals for the sheet. Every category, including Membership, counts.
+
+    Commission rows are left out of revenue, COGS, and net P/L. Their
+    amount is reported once, as commission, so it is not also profit.
+    """
+    commission_rows = []
+    sold = []
+    for item in items:
+        if not item.is_sold:
+            continue
+        record = commission_record(item)
+        if record is not None:
+            commission_rows.append(record)
+        else:
+            sold.append(item)
     stock   = [i for i in items if i.is_in_stock]
     pending = [i for i in items if i.is_pending]
 
@@ -292,6 +379,8 @@ def compute_summary(items: list[Item]) -> dict:
         "worst_flip":       worst,
         "stock_items":      stock,
         "pending_items":    pending,
+        "commission":       round(sum(row["amount"] for row in commission_rows), 2),
+        "commission_rows":  commission_rows,
     }
 
 
@@ -333,6 +422,11 @@ def get_reselling_summary() -> str:
         lines.append(f"  💸 Deposits owing: ${s['deposits_owing']:,.2f} (still to pay to complete purchase)")
 
     # Per-category breakdown
+    if s.get("commission"):
+        lines.append(
+            f"  Commission (not in the P/L above): ${s['commission']:,.2f}"
+        )
+
     if s["by_category"]:
         lines.append("  By category:")
         for cat, data in sorted(s["by_category"].items(), key=lambda x: -x[1]["profit"]):
