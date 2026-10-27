@@ -76,6 +76,7 @@ TIMEZONE = pytz.timezone(config.TIMEZONE)
 try:
     from term_context import (
         get_finance_goals,
+        get_income_payers,
         get_own_account_rules,
         get_refund_window_days,
     )
@@ -100,6 +101,10 @@ except Exception:
     def get_refund_window_days():
         """Fallback when term_context cannot be imported."""
         return 14
+
+    def get_income_payers():
+        """Fallback when term_context cannot be imported: no transfer is income."""
+        return []
 
 
 # ── Category rules ────────────────────────────────────────────────────────────
@@ -530,8 +535,9 @@ def _cents(amount):
 
 # ── Weekly spending rule ──────────────────────────────────────────────────────
 # Card, BPAY and direct debit lines count, in their category. Osko, Sct,
-# PayID, NPP and other transfers never count as spending or as income;
-# they are listed, marked not counted. Spends logged with the Back Tap
+# PayID, NPP and other transfers never count as spending, and only count
+# as income when spending.income_payers in term_context.json names the
+# payer (wages paid by Osko). The rest are listed, marked not counted. Spends logged with the Back Tap
 # shortcut (live_spend.py) count as logged. A card refund reduces an
 # earlier card purchase at the same merchant inside the refund window.
 
@@ -649,10 +655,12 @@ def _classified(transactions, start, end):
 
     Own-account moves and pending rows are dropped. Card, BPAY, direct
     debit and other debits are spending, net of card refunds. Transfers
-    go on their own list. Direct credits and other non-transfer credits
+    go on their own list, except a transfer in from a configured income
+    payer, which is income. Direct credits and other non-transfer credits
     are income. Logged spends are added to spending as they are.
     """
     window_days = get_refund_window_days()
+    payers = get_income_payers()
     spends, refunds, income, transfers = [], [], [], []
     for txn in transactions:
         if txn.get("pending"):
@@ -671,7 +679,10 @@ def _classified(transactions, start, end):
         direction = "out" if debit > 0 else "in"
         amount = round(debit if direction == "out" else credit, 2)
         row = {"date": day, "description": description, "amount": amount}
-        if rail == TRANSFER_RAIL:
+        payer = next((p for p in payers if p in _normalise_desc(description)), None)
+        if rail == TRANSFER_RAIL and direction == "in" and payer:
+            income.append({**row, "source": payer})
+        elif rail == TRANSFER_RAIL:
             transfers.append({**row, "date": day.isoformat(), "direction": direction})
         elif direction == "out" and rail in _SPEND_RAILS:
             category = categorise(description)
@@ -1246,9 +1257,11 @@ def is_monthly_review_day():
 
 def analyse_income(transactions, days=30):
     """
-    Income over the last N days: direct credits and other non-transfer credits.
+    Income over the last N days: direct credits, other non-transfer credits,
+    and transfers in from a listed income payer.
 
-    Transfers in (Osko, Sct, PayID, NPP) are never income automatically.
+    Transfers in (Osko, Sct, PayID, NPP) are income only when their payer
+    is listed in spending.income_payers in term_context.json.
     Card refunds reduce spending instead. Commission is not added here; it
     is the reselling sheet figure on the spending summary.
     """

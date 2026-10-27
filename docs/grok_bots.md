@@ -168,7 +168,8 @@ Routes: GET /finance and /finance/*, POST /spend, GET /flags, GET /today.
   card refunds) plus every spend logged with POST /spend or the Back
   Tap shortcut. Logged spends count in full in the category given;
   spending.logged says how much of the total they are. Transfers (Osko,
-  Sct, PayID, NPP) never count as spending or income.
+  Sct, PayID, NPP) never count as spending, and count as income only
+  when the payer is listed in spending.income_payers (his wages).
   spending.transfers lists them with counted false; mention the totals
   only as "not counted". If Manav paid for something by transfer and it
   is not in the total, ask him to log it with POST /spend. Do not add
