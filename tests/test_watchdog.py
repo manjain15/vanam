@@ -66,8 +66,9 @@ def test_probe_reads_token_from_dotenv(tmp_path, monkeypatch):
     assert watchdog.agent_api_token(env) == "bot-secret"
 
 
-def test_check_problems_includes_http_probe(monkeypatch):
+def test_check_problems_includes_http_probe(tmp_path, monkeypatch):
     monkeypatch.setattr(watchdog, "_systemctl", lambda *args: "active")
+    monkeypatch.setattr(watchdog, "HEARTBEAT_FILE", tmp_path / "missing")
     usage = type("Usage", (), {"total": 100, "used": 10})()
     monkeypatch.setattr(watchdog.shutil, "disk_usage", lambda _path: usage)
     monkeypatch.setattr(watchdog, "probe_agent_api", lambda: "❌ jarvis-agent-api /health probe failed")
@@ -101,3 +102,48 @@ def test_repeated_failure_alerts_once(tmp_path, monkeypatch):
     watchdog.run(daily=True)
     watchdog.run(daily=True)
     assert len(calls) == 5
+
+
+def test_heartbeat_fresh_missing_and_stale(tmp_path):
+    beat = tmp_path / "telegram_heartbeat"
+    assert watchdog.check_heartbeat(beat) is None  # not written yet
+    beat.touch()
+    now = beat.stat().st_mtime
+    assert watchdog.check_heartbeat(beat, now=now + 44 * 60) is None
+    stale = watchdog.check_heartbeat(beat, now=now + 3 * 24 * 3600)
+    assert "jarvis-telegram is active but its loop has not run" in stale
+    # Same text however long it has been stuck, so it alerts once.
+    assert stale == watchdog.check_heartbeat(beat, now=now + 46 * 60)
+
+
+def test_stuck_telegram_loop_is_a_problem_and_dumps_the_stack(tmp_path, monkeypatch):
+    """The daemon stayed "active" for days while its loop was stuck in one call."""
+    beat = tmp_path / "telegram_heartbeat"
+    beat.touch()
+    old = beat.stat().st_mtime - 3 * 24 * 3600
+    os.utime(beat, (old, old))
+    monkeypatch.setattr(watchdog, "HEARTBEAT_FILE", beat)
+    monkeypatch.setattr(watchdog, "_systemctl", lambda *args: "active")
+    usage = type("Usage", (), {"total": 100, "used": 10})()
+    monkeypatch.setattr(watchdog.shutil, "disk_usage", lambda _path: usage)
+    monkeypatch.setattr(watchdog, "probe_agent_api", lambda: None)
+    dumped = []
+    monkeypatch.setattr(watchdog, "dump_stuck_stack", lambda unit: dumped.append(unit) or True)
+    problems = watchdog.check_problems()
+    assert len(problems) == 1 and "loop has not run" in problems[0]
+    assert dumped == ["jarvis-telegram"]
+
+    beat.touch()
+    assert watchdog.check_problems() == []
+
+
+def test_dump_stuck_stack_signals_the_main_pid(monkeypatch):
+    sent = []
+    monkeypatch.setattr(watchdog, "_systemctl", lambda *args: "4242")
+    monkeypatch.setattr(watchdog.os, "kill", lambda pid, sig: sent.append((pid, sig)))
+    assert watchdog.dump_stuck_stack() is True
+    assert sent == [(4242, watchdog.signal.SIGUSR1)]
+    sent.clear()
+    monkeypatch.setattr(watchdog, "_systemctl", lambda *args: "0")
+    assert watchdog.dump_stuck_stack() is False
+    assert sent == []

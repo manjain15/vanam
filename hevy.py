@@ -32,8 +32,12 @@ import config
 # ── SSL fix for Mac ───────────────────────────────────────────────────────────
 _ssl_context = ssl.create_default_context(cafile=certifi.where())
 
+# Without a timeout a stalled connection blocks the caller forever, and the
+# Telegram daemon calls this from its single loop.
+HTTP_TIMEOUT = 30
+
 def _urlopen_ssl(req):
-    return urlopen(req, context=_ssl_context)
+    return urlopen(req, context=_ssl_context, timeout=HTTP_TIMEOUT)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 API_BASE = "https://api.hevyapp.com/v1"
@@ -58,7 +62,7 @@ def _get(endpoint, params=None):
     except HTTPError as e:
         print(f"⚠️   Hevy API error ({endpoint}): {e.code} — {e.read().decode()[:150]}")
         return None
-    except URLError as e:
+    except (URLError, TimeoutError) as e:
         print(f"⚠️   Hevy API error ({endpoint}): {e}")
         return None
 

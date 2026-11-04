@@ -22,6 +22,10 @@ BEHAVIOUR:
                  than ambiguous ("did it not run, or was all fine?").
   --print      → print the report to stdout, send nothing (for manual checks).
 
+  jarvis-telegram must also have touched data/telegram_heartbeat within
+  HEARTBEAT_STALE_MIN. A daemon stuck inside one call is still "active";
+  the stale heartbeat alerts, and SIGUSR1 dumps its stack to the journal.
+
   jarvis-agent-api is also probed over HTTP (127.0.0.1:5557/health with the
   bearer token). A unit that is "active" but not answering still alerts.
 
@@ -38,7 +42,9 @@ import json
 import os
 import sys
 import shutil
+import signal
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -52,6 +58,11 @@ TIMER_UNITS   = [
 DISK_WARN_PCT = 90  # alert if the root filesystem is at/over this % used
 AGENT_API_PORT = 5557
 STATE_FILE = Path(__file__).resolve().parent / "data" / "watchdog_state.json"
+# jarvis_telegram touches this once per loop pass. A pass can legitimately
+# run long (the 05:30 plan build makes a Claude call with retries), so allow
+# 45 minutes before calling the loop stuck.
+HEARTBEAT_FILE = Path(__file__).resolve().parent / "data" / "telegram_heartbeat"
+HEARTBEAT_STALE_MIN = 45
 ENV_FILE = Path(__file__).resolve().parent / ".env"
 
 
@@ -196,6 +207,36 @@ def should_notify(problems, daily, previous_fingerprint):
     return True, fingerprint
 
 
+def check_heartbeat(path=None, now=None, stale_min=HEARTBEAT_STALE_MIN):
+    """
+    Problem string when the Telegram loop has not ticked for stale_min
+    minutes, else None. A missing file is not a problem (first deploy, or
+    the daemon has not started yet); is-active covers a daemon that is down.
+    """
+    path = Path(path) if path is not None else HEARTBEAT_FILE
+    try:
+        age_s = (now if now is not None else time.time()) - path.stat().st_mtime
+    except OSError:
+        return None
+    if age_s < stale_min * 60:
+        return None
+    # No age in the text: it would change the fingerprint and re-alert every run.
+    return (f"❌ jarvis-telegram is active but its loop has not run for {stale_min}+ min "
+            f"(stuck; restart it: sudo systemctl restart jarvis-telegram)")
+
+
+def dump_stuck_stack(unit="jarvis-telegram"):
+    """Ask the stuck daemon to print its stack to the journal (SIGUSR1). Best effort."""
+    try:
+        pid = int(_systemctl("show", "-p", "MainPID", "--value", f"{unit}.service") or 0)
+        if pid > 0:
+            os.kill(pid, signal.SIGUSR1)
+            return True
+    except (ValueError, OSError):
+        pass
+    return False
+
+
 def check_problems():
     """
     Return a list of human-readable problem strings. Empty list = all healthy.
@@ -207,6 +248,11 @@ def check_problems():
         state = _systemctl("is-active", f"{unit}.service")
         if state != "active":
             problems.append(f"❌ {unit} service is {state or 'unknown'} (should be active)")
+        elif unit == "jarvis-telegram":
+            stale = check_heartbeat()
+            if stale:
+                problems.append(stale)
+                dump_stuck_stack(unit)
 
     # Timer-driven units: the timer must be active, and the last service run
     # must not have failed.
