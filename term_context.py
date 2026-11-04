@@ -21,6 +21,7 @@ USAGE:
 
 UPDATE WORKFLOW:
   - Add assessment due dates as soon as they appear on Moodle
+    (or POST /assessments, which calls add_assessment)
   - Mark spec_released true once the spec is out (/spec or PATCH /assessments).
     Assignments and projects omit the field until then, and the planner
     does not schedule them. Exams, quizzes, and in-class tests are treated
@@ -29,7 +30,8 @@ UPDATE WORKFLOW:
   - Update mentor.last_contact after every conversation
   - Bump term.week each Monday (or automate via start_date)
 
-Validated writers (patch_mentor, patch_internship, add_internship) share
+Validated writers (patch_mentor, patch_internship, add_internship,
+add_assessment) share
 mutate_context with the CLI helpers. The agent API uses those writers so
 external corrections hit the same locked, atomic file the flags read.
 """
@@ -85,6 +87,9 @@ _NAME_LIMITS = {
     "role": 120,
 }
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+_ASSESSMENT_NAME_LIMIT = 200
+_ASSESSMENT_TYPE_LIMIT = 40
 
 
 class TermRecordNotFound(LookupError):
@@ -1309,6 +1314,107 @@ def add_internship(company, role, status, last_update=None, next_action="", note
         rows.append(record)
         result["record"] = dict(record)
         result["target"] = {"company": record["company"], "role": record["role"]}
+
+    mutate_context(_mutate)
+    return result
+
+
+def _parse_due(value):
+    """Return a valid YYYY-MM-DD due date. Past dates are allowed; no time part."""
+    if not isinstance(value, str) or not _DATE_RE.match(value.strip()):
+        raise ValueError("due must be an ISO date (YYYY-MM-DD)")
+    try:
+        parsed = datetime.date.fromisoformat(value.strip())
+    except ValueError:
+        raise ValueError("due must be an ISO date (YYYY-MM-DD)")
+    if parsed.year < 2000:
+        raise ValueError("due is unreasonably old")
+    return parsed.isoformat()
+
+
+def _parse_weight(value):
+    """Percent weight 0-100, or None when unknown. Whole numbers are stored as int."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("weight must be a number or null")
+    if not 0 <= value <= 100:
+        raise ValueError("weight must be between 0 and 100")
+    return int(value) if float(value).is_integer() else float(value)
+
+
+def _parse_line(value, field, max_len):
+    """Strip a required single-line string. Empty, multi-line, or too long raise ValueError."""
+    text = _parse_text(value, field, max_len)
+    if not text:
+        raise ValueError(f"{field} is required")
+    if any(ch in text for ch in "\n\t"):
+        raise ValueError(f"{field} must be a single line")
+    return text
+
+
+def add_assessment(subject, name, due, weight=None, kind=None, time=None,
+                   notes=None, spec_released=None, audit_fn=None):
+    """
+    Append one assessment to an existing subject in term_context.json.
+
+    ``subject`` must equal a stored course code (case-insensitive). An
+    unknown subject raises TermRecordNotFound, and a name already used in
+    that subject (case-insensitive) raises TermRecordConflict. ``due`` is
+    date-only; an optional ``time`` (HH:MM) is stored beside it. ``weight``
+    may be None. ``kind`` is stored as ``type``. When ``spec_released`` is
+    omitted it is resolved from the type and name the same way spec_is_released does, so exams start
+    released and assignments start parked until /spec. audit_fn(None,
+    record, public) runs inside the lock before the file is replaced.
+    """
+    code = _parse_line(subject, "subject", 20)
+    record = {
+        "name": _parse_line(name, "name", _ASSESSMENT_NAME_LIMIT),
+        "due": _parse_due(due),
+        "weight": _parse_weight(weight),
+        "status": "pending",
+    }
+    if kind is not None:
+        record["type"] = _parse_line(kind, "type", _ASSESSMENT_TYPE_LIMIT)
+    if time is not None:
+        if not isinstance(time, str) or not _TIME_RE.match(time.strip()):
+            raise ValueError("time must be HH:MM (24-hour)")
+        record["time"] = time.strip()
+    if notes is not None:
+        text = _parse_text(notes, "notes", _TEXT_LIMITS["notes"])
+        if text:
+            record["notes"] = text
+    if spec_released is not None and not isinstance(spec_released, bool):
+        raise ValueError("spec_released must be a boolean")
+    record["spec_released"] = (
+        spec_released if spec_released is not None else spec_is_released(record)
+    )
+    result = {}
+
+    def _mutate(ctx):
+        target = None
+        for row in ctx.get("subjects") or []:
+            if isinstance(row, dict) and str(row.get("code") or "").strip().casefold() == code.casefold():
+                target = row
+                break
+        if target is None:
+            raise TermRecordNotFound(f"subject not found: {code}")
+        rows = target.get("assessments")
+        if rows is None:
+            rows = []
+            target["assessments"] = rows
+        if not isinstance(rows, list):
+            raise ValueError("assessments must be a list")
+        for existing in rows:
+            if isinstance(existing, dict) and str(existing.get("name") or "").strip().casefold() == record["name"].casefold():
+                raise TermRecordConflict(
+                    f"assessment already exists: {target['code']} {existing.get('name')}"
+                )
+        public = {"subject": target["code"], **record}
+        if audit_fn is not None:
+            audit_fn(None, dict(record), dict(public))
+        rows.append(record)
+        result["assessment"] = public
 
     mutate_context(_mutate)
     return result

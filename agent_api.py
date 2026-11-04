@@ -32,11 +32,12 @@ Do not open the port on the public firewall. See docs/API.md.
 COST:
   POST /ask is one Claude call, the same order of cost as a Telegram message.
   GET /memory/search hits Mem0 (OpenAI embeddings). Do not poll either.
-  Mentor, internship, assessment-spec, and spend writes do not call
+  Mentor, internship, assessment, and spend writes do not call
   Anthropic. Mentor, internship, and spec updates go through
   term_context.mutate_context, which refuses to replace a term_context.json
   that exists but will not parse. Spend calls live_spend.log_spend. All of
-  them append data/agent_api_audit.jsonl. PATCH /assessments is owner-only.
+  them append data/agent_api_audit.jsonl. PATCH and POST /assessments are
+  owner-only.
   GET /finance* is read-only. It reads local CSVs and term_context goals.
   Reselling inventory also reads the Google Sheet once per call. No Anthropic.
   A weekly Money check should call GET /finance, not poll it.
@@ -80,13 +81,16 @@ _MENTOR_BODY_KEYS = {"actor", "reason", *term_context.MENTOR_WRITABLE_FIELDS}
 _INTERNSHIP_PATCH_KEYS = {"actor", "reason", "company", "role", *term_context.INTERNSHIP_WRITABLE_FIELDS}
 _INTERNSHIP_ADD_KEYS = {"actor", "reason", "company", "role", "status", "last_update", "next_action", "notes"}
 _ASSESSMENT_SPEC_KEYS = {"actor", "reason", "subject", "name", "spec_released"}
+_ASSESSMENT_ADD_KEYS = {
+    "actor", "reason", "subject", "name", "due", "weight", "type", "time", "notes", "spec_released",
+}
 
 TIMEZONE     = pytz.timezone(config.TIMEZONE)
 DEFAULT_PORT = 5557
 
 # Per-bot route allowlist. A prefix matches that path and anything under it
 # (/finance covers /finance/spending). /ask, /memory/search, /brief, and
-# PATCH /assessments are not listed: only the legacy JARVIS_API_TOKEN
+# PATCH/POST /assessments are not listed: only the legacy JARVIS_API_TOKEN
 # (actor "owner") can call them, unless you add the path to a bot here.
 BOT_ROUTE_ALLOWLIST = {
     "career": ("/health", "/flags", "/context", "/mentor", "/internships", "/today", "/areas"),
@@ -1142,6 +1146,52 @@ def apply_assessment_spec(body):
     }
 
 
+def apply_assessment_add(body):
+    """Append one assessment to an existing subject. Owner token only.
+
+    subject, name, and due are required. weight may be null (or omitted)
+    when it is not known yet; every other field rejects null. Unknown
+    subject raises TermRecordNotFound; a name already in that subject
+    raises TermRecordConflict. spec_released defaults from type and name.
+    """
+    _json_object(body)
+    _reject_unknown_fields(body, _ASSESSMENT_ADD_KEYS)
+    _reject_nulls({key: value for key, value in body.items() if key != "weight"})
+    actor = _request_actor()
+    reason = _reason(body)
+    for key in ("subject", "name", "due"):
+        if key not in body:
+            raise ValueError(f"{key} is required")
+
+    def _audit(old, new, record):
+        append_external_audit(_audit_entry(
+            actor,
+            "assessment_add",
+            {"subject": record.get("subject"), "name": record.get("name")},
+            reason,
+            old,
+            new,
+        ))
+
+    result = term_context.add_assessment(
+        body["subject"],
+        body["name"],
+        body["due"],
+        weight=body.get("weight"),
+        kind=body.get("type"),
+        time=body.get("time"),
+        notes=body.get("notes"),
+        spec_released=body.get("spec_released"),
+        audit_fn=_audit,
+    )
+    return {
+        "ok": True,
+        "changed": True,
+        "audit_logged": True,
+        "assessment": result["assessment"],
+    }
+
+
 def _is_calendar_date(token):
     """True when token is a real ISO or day-month-year date."""
     for fmt in ("%Y-%m-%d", "%d-%m-%Y"):
@@ -1791,6 +1841,11 @@ def create_app(token=None, bot_tokens=None):
     def patch_assessment_spec():
         """Mark one assessment's spec as released. Owner token only."""
         return _commit(apply_assessment_spec, "assessment spec")
+
+    @app.post("/assessments")
+    def add_assessment():
+        """Add one assessment to an existing subject. Owner token only."""
+        return _commit(apply_assessment_add, "assessment add", success_status=201)
 
     def _finance_dates():
         return spending_window(request.args.get("start"), request.args.get("end"))

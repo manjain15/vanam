@@ -148,3 +148,52 @@ def test_prompt_rule_uses_the_urgent_flag():
     )
     assert "urgent_assessments" in prompt
     assert "A due assessment comes before" not in prompt
+
+
+def test_exam_with_null_weight_uses_the_default_lead_window(tmp_path, monkeypatch):
+    # A final exam added before its weight is known: weight is null.
+    inside = (TODAY + datetime.timedelta(days=8)).isoformat()
+    _install(tmp_path, monkeypatch, [
+        {"name": "Final Exam", "due": inside, "weight": None, "status": "pending",
+         "type": "exam", "time": "09:00", "spec_released": True},
+    ])
+    ctx, tasks = _study_task(TODAY)
+    assert ctx["MATH2931"]["urgent"] is True
+    assert ctx["MATH2931"]["urgent_assessments"] == ["Final Exam"]
+    notes = [note for note in ctx["MATH2931"]["notes"] if note.startswith("Final Exam due ")]
+    assert notes and "None" not in notes[0] and "%" not in notes[0]
+    assert tasks == ["Final Exam"]
+    assert day_plan.assessment_boosts(TODAY, ["MATH2931"]) == {"MATH2931": day_plan.BOOST_LEAD}
+    alerts = st.get_assessment_alerts(TODAY)
+    assert any("Final Exam" in alert and "None" not in alert for alert in alerts)
+
+
+def test_exam_with_null_weight_outside_the_window_stays_quiet(tmp_path, monkeypatch):
+    outside = (TODAY + datetime.timedelta(days=12)).isoformat()
+    _install(tmp_path, monkeypatch, [
+        {"name": "Final Exam", "due": outside, "weight": None, "status": "pending", "type": "exam"},
+    ])
+    ctx, tasks = _study_task(TODAY)
+    assert ctx["MATH2931"]["urgent"] is False
+    assert tasks == ["W5 problems"]
+    assert day_plan.assessment_boosts(TODAY, ["MATH2931"]) == {}
+    assert st.get_assessment_alerts(TODAY) == []
+
+
+def test_null_weight_renders_in_briefs_and_flags(tmp_path, monkeypatch):
+    import morning_brief
+    due = (datetime.date.today() + datetime.timedelta(days=3)).isoformat()
+    path = tmp_path / "term_context.json"
+    path.write_text(json.dumps({"subjects": [{
+        "code": "MATH2931",
+        "assessments": [{"name": "Final Exam", "due": due, "weight": None,
+                         "status": "pending", "spec_released": True}],
+    }]}))
+    monkeypatch.setattr(term_context, "CONTEXT_FILE", path)
+    upcoming = term_context.get_upcoming_assessments(term_context.load_context())
+    assert upcoming[0]["weight"] is None
+    rows = morning_brief.due_rows(upcoming)
+    assert rows[0]["label"] == "MATH2931 Final Exam"
+    assert any("Final Exam" in flag and "None" not in flag for flag in term_context.get_flags())
+    summary = term_context.get_term_summary()
+    assert summary["assessments"][0]["weight"] is None

@@ -21,10 +21,10 @@ The agent API reuses existing code:
   and reselling cashflow plus the sheet P&L (`analyse_reselling`,
   `reselling_tracker`). They do not return raw account numbers.
 - `POST /spend` calls `live_spend.log_spend` (the Back Tap path is unchanged).
-- `PATCH /mentor`, `PATCH /internships`, `POST /internships`, and
-  `PATCH /assessments` write `term_context.json` through
-  `term_context.mutate_context`, the same locked atomic update the flags
-  read on the next request. `PATCH /assessments` is owner-only.
+- `PATCH /mentor`, `PATCH /internships`, `POST /internships`,
+  `PATCH /assessments`, and `POST /assessments` write `term_context.json`
+  through `term_context.mutate_context`, the same locked atomic update the
+  flags read on the next request. Both `/assessments` routes are owner-only.
 - `POST /events` and `GET /today` use the daily ledger (`ledger.py`,
   `data/ledger/YYYY-MM-DD.json`). See `docs/REWORK.md`.
 - `GET /checkin/today` and `POST /checkin` run the coach's evening check-in
@@ -61,7 +61,7 @@ can call):
 | `phone` | `/health`, `/events` |
 | `owner` (`JARVIS_API_TOKEN`) | every route |
 
-`/ask`, `/memory/search`, `/brief`, and `PATCH /assessments` stay on the owner
+`/ask`, `/memory/search`, `/brief`, and `/assessments` (PATCH and POST) stay on the owner
 token unless you add them to a bot's tuple in `BOT_ROUTE_ALLOWLIST`. A known
 route outside the caller's list is `403 {"error": "forbidden"}`.
 
@@ -606,6 +606,43 @@ curl -sS -X POST \
 
 The new row is what `GET /flags` and `GET /context` read on the next request. No process restart.
 
+### Add an assessment
+
+`POST /assessments`. Owner token only (it is not on a bot allowlist). Appends one entry to `subjects[].assessments[]` for an existing subject, for example a final exam once the exam timetable is out.
+
+Required: `subject`, `name`, `due`. Optional: `weight`, `type`, `time`, `notes`, `spec_released`, and `reason` (audit only, mentor rules). A body field named `actor` is ignored, and any other field is `400`.
+
+- `subject` must equal a stored course code (case-insensitive). A prefix is not enough. An unknown subject is `404`; this route does not create subjects.
+- `name` is one line, 200 characters or fewer. A name already used in that subject (case-insensitive, ignoring surrounding spaces) is `409`.
+- `due` is a date only, `YYYY-MM-DD`. Past dates are accepted. Put a start time in `time` (`HH:MM`, 24-hour), not in `due`.
+- `weight` is a percentage from 0 to 100, or `null` (or omitted) when it is not known yet. A null weight uses the 10-day default lead window, and briefs show the assessment without a percentage.
+- `type` is a short label such as `exam`, `quiz`, `assignment`, or `project`.
+- `status` is always `pending`. Use Telegram `/done` to mark it submitted.
+- `spec_released` is a JSON boolean. When omitted it is resolved the same way as a missing field (see below) and stored: exams, quizzes, midterms, tests, and finals start released, and assignments, projects, and anything else start not released until `PATCH /assessments` or `/spec`.
+
+Every field except `weight` rejects `null`. Bad input is `400` and the file is not modified.
+
+```
+curl -sS -X POST \
+  -H "Authorization: Bearer $JARVIS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "subject": "COMP1000",
+    "name": "Final Exam",
+    "due": "2030-06-14",
+    "time": "09:00",
+    "type": "exam",
+    "weight": null,
+    "notes": "Closed book",
+    "reason": "Exam timetable released"
+  }' \
+  https://<your-host>/assessments
+```
+
+`201 {"ok": true, "changed": true, "audit_logged": true, "assessment": {"subject": "COMP1000", "name": "Final Exam", "due": "2030-06-14", "weight": null, "status": "pending", "type": "exam", "time": "09:00", "notes": "Closed book", "spec_released": true}}`
+
+The planner, `GET /context`, `GET /flags`, the morning brief, and the weekly review read the new row on their next run. No restart.
+
 ### Mark an assessment spec as released
 
 `PATCH /assessments`. Owner token only (it is not on a bot allowlist). `subject` and `name` are required. `spec_released` is optional and defaults to `true`; send `false` to take the spec back. Optional `reason` follows the mentor rules. A body field named `actor` is ignored.
@@ -648,13 +685,13 @@ Telegram, from the owner chat: `/spec MATH2931 Assignment 2`. Several matches ar
 
 `term_updates.py` and `update_profile.py` queue overnight Claude suggestions until you approve them (`python term_updates.py`, or Telegram `/approve`). `proposal_trust.py` only counts those approve/reject decisions. Nothing reads the score to allow or block a write.
 
-These routes are the external-agent equivalent of `/mentor`, `/internship`, and `/spec`: the caller already holds `JARVIS_API_TOKEN`. They apply in the same locked `mutate_context` path, with a stricter allowlist than the Telegram command's free-form `key=value` pairs. A queued correction would leave `GET /flags` stale until a manual review, so the write hits `term_context.json` directly. The accountability record is the audit log below.
+These routes are the external-agent equivalent of `/mentor`, `/internship`, and `/spec` (`POST /assessments` has no Telegram equivalent): the caller already holds `JARVIS_API_TOKEN`. They apply in the same locked `mutate_context` path, with a stricter allowlist than the Telegram command's free-form `key=value` pairs. A queued correction would leave `GET /flags` stale until a manual review, so the write hits `term_context.json` directly. The accountability record is the audit log below.
 
 Bad input returns `400 {"error": "..."}` and leaves `term_context.json` unchanged. A failed audit append also leaves the context file unchanged.
 
 ### Audit log
 
-Each real change appends one JSON line to `data/agent_api_audit.jsonl` on the VPS (the `data/` directory is gitignored). The line has `ts`, `actor`, `action` (`mentor_update`, `internship_update`, `internship_add`, or `assessment_spec`), `target`, `reason`, `old`, and `new`. There is no HTTP route for the log. `assessment_spec` targets `{"subject", "name"}`. The actor is `owner`, because only the legacy token can call `PATCH /assessments`.
+Each real change appends one JSON line to `data/agent_api_audit.jsonl` on the VPS (the `data/` directory is gitignored). The line has `ts`, `actor`, `action` (`mentor_update`, `internship_update`, `internship_add`, `assessment_spec`, or `assessment_add`), `target`, `reason`, `old`, and `new`. There is no HTTP route for the log. `assessment_spec` and `assessment_add` target `{"subject", "name"}`; `assessment_add` has `old: null` and the stored row as `new`. The actor is `owner`, because only the legacy token can call `/assessments`.
 
 ## Laptop sync scripts
 
