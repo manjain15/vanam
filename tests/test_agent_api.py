@@ -76,6 +76,7 @@ def test_every_route_requires_bearer():
             "actor": "career", "company": "Atlassian", "role": "SWE", "status": "applied",
         }),
         ("patch", "/assessments", {"subject": "MATH2931", "name": "Assignment 2"}),
+        ("post", "/assessments", {"subject": "MATH2931", "name": "Final Exam", "due": "2031-06-15"}),
         ("get", "/finance", None),
         ("get", "/finance/spending", None),
         ("get", "/finance/savings", None),
@@ -659,6 +660,12 @@ def test_per_bot_scopes(monkeypatch, tmp_path):
     assert client.patch(
         "/assessments", headers=study, json={"subject": "MATH2931", "name": "Assignment 2"},
     ).status_code == 403
+    assert client.post(
+        "/assessments", headers=study, json={"subject": "MATH2931", "name": "Final Exam", "due": "2031-06-15"},
+    ).status_code == 403
+    assert client.post(
+        "/assessments", headers=career, json={"subject": "MATH2931", "name": "Final Exam", "due": "2031-06-15"},
+    ).status_code == 403
     assert client.get("/finance", headers=study).status_code == 403
 
     assert client.get("/health", headers=money).status_code == 200
@@ -1216,3 +1223,157 @@ def test_assessment_spec_audit_failure_leaves_the_file(tmp_path, monkeypatch):
     assert res.status_code == 500
     assert path.read_text() == before
     assert _audit_lines(tmp_path) == []
+
+
+def test_assessment_add_appends_and_audits(tmp_path, monkeypatch):
+    path = _spec_term(tmp_path, monkeypatch)
+    client = _client()
+    res = client.post("/assessments", headers=AUTH, json={
+        "subject": "math2931",
+        "name": "Final Exam",
+        "due": "2031-06-15",
+        "time": "09:00",
+        "type": "exam",
+        "weight": None,
+        "notes": "Closed book",
+        "reason": "Exam timetable out",
+        "actor": "study",
+    })
+    assert res.status_code == 201, res.get_json()
+    body = res.get_json()
+    assert body["ok"] is True and body["audit_logged"] is True
+    assert body["assessment"] == {
+        "subject": "MATH2931", "name": "Final Exam", "due": "2031-06-15", "weight": None,
+        "status": "pending", "type": "exam", "time": "09:00", "notes": "Closed book",
+        "spec_released": True,
+    }
+    stored = json.loads(path.read_text())["subjects"][0]["assessments"]
+    assert len(stored) == 3
+    assert stored[-1] == {
+        "name": "Final Exam", "due": "2031-06-15", "weight": None, "status": "pending",
+        "type": "exam", "time": "09:00", "notes": "Closed book", "spec_released": True,
+    }
+    assert (tmp_path / "term_context.json.bak").exists()
+    audit = _audit_lines(tmp_path)
+    assert len(audit) == 1
+    assert audit[0]["action"] == "assessment_add"
+    assert audit[0]["actor"] == "owner"
+    assert audit[0]["target"] == {"subject": "MATH2931", "name": "Final Exam"}
+    assert audit[0]["reason"] == "Exam timetable out"
+    assert audit[0]["old"] is None
+    assert audit[0]["new"]["due"] == "2031-06-15"
+
+    # The new row is what the readers see on the next request.
+    rows = {row["name"]: row for row in term_context.find_assessment_matches(
+        term_context.load_context(), "MATH2931", "Final Exam")}
+    assert rows["Final Exam"]["weight"] is None
+
+
+def test_assessment_add_spec_defaults_by_kind(tmp_path, monkeypatch):
+    path = _spec_term(tmp_path, monkeypatch)
+    client = _client()
+    assignment = client.post("/assessments", headers=AUTH, json={
+        "subject": "MATH2931", "name": "Assignment 3", "due": "2031-05-01", "weight": 20,
+    })
+    assert assignment.status_code == 201
+    assert assignment.get_json()["assessment"]["spec_released"] is False
+    project = client.post("/assessments", headers=AUTH, json={
+        "subject": "MATH2931", "name": "Group Work", "due": "2031-05-08", "type": "project",
+    })
+    assert project.get_json()["assessment"]["spec_released"] is False
+    quiz = client.post("/assessments", headers=AUTH, json={
+        "subject": "MATH2931", "name": "Quiz 4", "due": "2031-05-10", "weight": 7.5,
+    })
+    assert quiz.get_json()["assessment"]["spec_released"] is True
+    assert quiz.get_json()["assessment"]["weight"] == 7.5
+    override = client.post("/assessments", headers=AUTH, json={
+        "subject": "MATH2931", "name": "Assignment 4", "due": "2031-05-20", "spec_released": True,
+    })
+    assert override.get_json()["assessment"]["spec_released"] is True
+    stored = {row["name"]: row for row in json.loads(path.read_text())["subjects"][0]["assessments"]}
+    assert stored["Assignment 3"]["spec_released"] is False
+    assert "weight" in stored["Assignment 4"] and stored["Assignment 4"]["weight"] is None
+    assert "time" not in stored["Assignment 3"] and "type" not in stored["Assignment 3"]
+
+
+def test_assessment_add_rejects_bad_input_and_conflicts(tmp_path, monkeypatch):
+    path = _spec_term(tmp_path, monkeypatch)
+    before = path.read_text()
+    client = _client()
+    unknown = client.post("/assessments", headers=AUTH, json={
+        "subject": "ZZZZ9999", "name": "Final Exam", "due": "2031-06-15",
+    })
+    assert unknown.status_code == 404
+    # A course prefix is not enough: the subject must match exactly.
+    prefix = client.post("/assessments", headers=AUTH, json={
+        "subject": "MATH", "name": "Final Exam", "due": "2031-06-15",
+    })
+    assert prefix.status_code == 404
+    duplicate = client.post("/assessments", headers=AUTH, json={
+        "subject": "MATH2931", "name": "  assignment 2 ", "due": "2031-06-15",
+    })
+    assert duplicate.status_code == 409
+    assert "already exists" in duplicate.get_json()["error"]
+
+    base = {"subject": "MATH2931", "name": "Final Exam", "due": "2031-06-15"}
+    bad_bodies = [
+        {"subject": "MATH2931", "name": "Final Exam"},
+        {"subject": "MATH2931", "due": "2031-06-15"},
+        {"name": "Final Exam", "due": "2031-06-15"},
+        {**base, "due": "2031-06-15T09:00"},
+        {**base, "due": "15/06/2031"},
+        {**base, "due": "2031-02-30"},
+        {**base, "due": None},
+        {**base, "name": ""},
+        {**base, "name": "Final\nExam"},
+        {**base, "name": "x" * 201},
+        {**base, "weight": "40"},
+        {**base, "weight": True},
+        {**base, "weight": 120},
+        {**base, "weight": -1},
+        {**base, "time": "9am"},
+        {**base, "time": "24:00"},
+        {**base, "time": None},
+        {**base, "type": None},
+        {**base, "type": 3},
+        {**base, "notes": None},
+        {**base, "spec_released": "true"},
+        {**base, "spec_released": None},
+        {**base, "status": "submitted"},
+        {**base, "covers_weeks": [1, 2]},
+        {**base, "reason": 5},
+    ]
+    for payload in bad_bodies:
+        res = client.post("/assessments", headers=AUTH, json=payload)
+        assert res.status_code == 400, (payload, res.status_code, res.get_json())
+    assert path.read_text() == before
+    assert _audit_lines(tmp_path) == []
+
+
+def test_assessment_add_refuses_a_corrupt_file_and_failed_audit(tmp_path, monkeypatch):
+    path = tmp_path / "term_context.json"
+    path.write_text('{"subjects": [{"code": "MATH2931"')
+    before = path.read_bytes()
+    monkeypatch.setattr(term_context, "CONTEXT_FILE", path)
+    monkeypatch.setattr(agent_api, "AUDIT_FILE", tmp_path / "agent_api_audit.jsonl")
+    res = _client().post("/assessments", headers=AUTH, json={
+        "subject": "MATH2931", "name": "Final Exam", "due": "2031-06-15",
+    })
+    assert res.status_code == 409
+    assert "refusing to overwrite" in res.get_json()["error"]
+    assert path.read_bytes() == before
+    assert not (tmp_path / "term_context.json.bak").exists()
+    assert not (tmp_path / "agent_api_audit.jsonl").exists()
+
+    path = _spec_term(tmp_path, monkeypatch)
+    before = path.read_text()
+
+    def fail(_entry):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(agent_api, "append_external_audit", fail)
+    res = _client().post("/assessments", headers=AUTH, json={
+        "subject": "MATH2931", "name": "Final Exam", "due": "2031-06-15",
+    })
+    assert res.status_code == 500
+    assert path.read_text() == before

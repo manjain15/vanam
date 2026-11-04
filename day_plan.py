@@ -190,9 +190,8 @@ def course_context(date, courses):
                 if not isinstance(days, int) or days < 0 or days > _lead_days(a.get("weight")):
                     continue
                 urgent_names.append(a["name"])
-                lines.append(
-                    f"{a['name']} due {a['due']:%a %d %b} ({days}d, {a.get('weight')}%)"
-                )
+                weight = f", {a['weight']}%" if a.get("weight") is not None else ""
+                lines.append(f"{a['name']} due {a['due']:%a %d %b} ({days}d{weight})")
         out[code] = {
             "week": week,
             "notes": lines,
