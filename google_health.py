@@ -27,8 +27,12 @@ import config
 # ── SSL fix for Mac ───────────────────────────────────────────────────────────
 _ssl_context = ssl.create_default_context(cafile=certifi.where())
 
+# Without a timeout a stalled connection blocks the caller forever, and the
+# Telegram daemon calls this from its single loop.
+HTTP_TIMEOUT = 30
+
 def _urlopen_ssl(req):
-    return urlopen(req, context=_ssl_context)
+    return urlopen(req, context=_ssl_context, timeout=HTTP_TIMEOUT)
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 SCRIPT_DIR        = Path(__file__).parent
@@ -129,7 +133,7 @@ def _get(endpoint, token):
     except HTTPError as e:
         print(f"\u26a0\ufe0f   Health API error ({endpoint[:60]}): {e.code} — {e.read().decode()[:150]}")
         return None
-    except URLError as e:
+    except (URLError, TimeoutError) as e:
         print(f"\u26a0\ufe0f   Health API error ({endpoint[:60]}): {e}")
         return None
 
@@ -148,7 +152,7 @@ def _post(endpoint, body, token):
     except HTTPError as e:
         print(f"\u26a0\ufe0f   Health API error ({endpoint[:60]}): {e.code} — {e.read().decode()[:150]}")
         return None
-    except URLError as e:
+    except (URLError, TimeoutError) as e:
         print(f"\u26a0\ufe0f   Health API error ({endpoint[:60]}): {e}")
         return None
 

@@ -52,8 +52,12 @@ Anything else → conversation with Claude, who has your profile + term
 context + memory in scope.
 """
 
+import os
 import sys
 import json
+import signal
+import socket
+import faulthandler
 import time
 import shlex
 import datetime
@@ -103,6 +107,9 @@ DATA_DIR    = SCRIPT_DIR / "data"
 MEMORY_DIR  = SCRIPT_DIR / "memory"
 THREAD_FILE = DATA_DIR / "telegram_thread.jsonl"
 OFFSET_FILE = DATA_DIR / "telegram_offset.txt"
+# Touched once per loop pass. watchdog.py alerts when it goes stale, which
+# catches a daemon that is still "active" but stuck inside one call.
+HEARTBEAT_FILE = DATA_DIR / "telegram_heartbeat"
 
 DATA_DIR.mkdir(exist_ok=True)
 MEMORY_DIR.mkdir(exist_ok=True)
@@ -1297,6 +1304,38 @@ def ensure_bot_display_name():
         )
 
 
+def _sd_notify(message):
+    """Send a systemd notify message (e.g. WATCHDOG=1). No-op outside systemd."""
+    addr = os.environ.get("NOTIFY_SOCKET")
+    if not addr:
+        return False
+    if addr.startswith("@"):
+        addr = "\0" + addr[1:]
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as sock:
+            sock.connect(addr)
+            sock.sendall(message.encode())
+        return True
+    except OSError:
+        return False
+
+
+def beat(path=None):
+    """Record one loop pass: touch the heartbeat file and ping the systemd watchdog."""
+    try:
+        (path or HEARTBEAT_FILE).touch()
+    except OSError:
+        pass
+    _sd_notify("WATCHDOG=1")
+
+
+def enable_stack_dumps():
+    """Dump every thread's stack to stderr (the journal) on SIGABRT, or on SIGUSR1 on demand."""
+    faulthandler.enable(all_threads=True)
+    if hasattr(signal, "SIGUSR1"):
+        faulthandler.register(signal.SIGUSR1, all_threads=True)
+
+
 def run_listener():
     if not config.TELEGRAM_BOT_TOKEN:
         print("❌  config.TELEGRAM_BOT_TOKEN is empty. See setup at top of file.")
@@ -1313,8 +1352,10 @@ def run_listener():
     ensure_bot_display_name()
     send_message("Vanam online. Send /help for commands.")
 
+    enable_stack_dumps()
     offset = load_offset()
     while True:
+        beat()
         try:
             if time.time() - static_context_holder["ts"] > REFRESH_SECONDS:
                 static_context_holder["text"] = build_static_context()
