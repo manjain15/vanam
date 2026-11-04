@@ -763,7 +763,9 @@ def test_comp_note_review_without_a_topic_is_still_practice(monkeypatch):
 
 # ── Schedule changes and re-planning ─────────────────────────────────────────
 
-def test_override_moves_the_routine():
+def test_override_moves_the_routine(monkeypatch):
+    # set_override prunes changes older than 14 days against the clock; pin it.
+    monkeypatch.setattr(ledger, "now_local", lambda: at(8, date=MONDAY))
     day_plan.set_override(MONDAY, {"remove": ["Automation work"]})
     day_plan.set_override(TUESDAY, {"add": [{"start": "09:30", "end": "17:30", "label": "Automation work"}]})
     plan = dict(PLAN, routine={"Monday": [{"start": "09:30", "end": "17:30", "label": "Automation work"}]})
