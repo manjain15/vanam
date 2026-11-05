@@ -18,6 +18,15 @@ HOW IT WORKS:
      the weekly total and its category. These are transfer purchases, which
      never appear as card lines, so there is no duplicate check.
 
+KINDS (optional "kind" field; a missing kind is "spend", so old shortcut
+payloads and old lines in the file behave as before):
+  spend    my own purchase. Added to spending, as above.
+  fronted  I paid for other people. amount is their share, which is taken
+           off my spending in that category. The purchase itself still has
+           to count (a card line, or a logged spend for the full amount).
+  repaid   money paid back to me. Never spending. Reduces what is owed, and
+           a matching transfer in on the bank statement is not income.
+
 SETUP:
   python live_spend.py --gen-token   # create data/.spend_token (once)
   python live_spend.py --serve       # run the server (systemd on VPS)
@@ -50,6 +59,9 @@ TIMEZONE = pytz.timezone(config.TIMEZONE)
 SERVER_PORT = 5556
 DEFAULT_BIND_HOST = "127.0.0.1"
 MAX_AMOUNT  = 5000.00  # sanity cap — reject fat-finger / junk entries
+
+KINDS = ("spend", "fronted", "repaid")
+DEFAULT_KIND = "spend"
 
 # Must mirror the category names in finance_tracker.CATEGORY_RULES (+ Other)
 VALID_CATEGORIES = {
@@ -111,12 +123,34 @@ def generate_token():
 
 # ── Logging + reading ─────────────────────────────────────────────────────────
 
-def normalise_spend(amount, category, note=""):
-    """Validate a live spend and return the amount, category, and note to store.
+def normalise_kind(kind):
+    """Return a known kind. None or blank is "spend". Unknown raises ValueError."""
+    if kind is None:
+        return DEFAULT_KIND
+    if not isinstance(kind, str):
+        raise ValueError(f"kind must be one of: {', '.join(KINDS)}")
+    value = kind.strip().lower() or DEFAULT_KIND
+    if value not in KINDS:
+        raise ValueError(f"kind must be one of: {', '.join(KINDS)}")
+    return value
+
+
+def entry_kind(entry):
+    """Kind of a stored entry. Lines written before kinds existed are spends."""
+    value = str(entry.get("kind") or "").strip().lower()
+    return value if value in KINDS else DEFAULT_KIND
+
+
+def normalise_spend(amount, category, note="", kind=None):
+    """Validate a live spend and return the amount, category, note, and kind to store.
 
     Does not write a file. log_spend uses this so a caller can recognise a
-    retry of the same amount, category, and note before appending a line.
+    retry of the same amount, category, note, and kind before appending a
+    line. A repaid entry may omit category; it is stored as Other.
     """
+    kind = normalise_kind(kind)
+    if kind == "repaid" and not str(category or "").strip():
+        category = "Other"
     try:
         amount = round(float(amount), 2)
     except (TypeError, ValueError):
@@ -131,15 +165,15 @@ def normalise_spend(amount, category, note=""):
         raise ValueError(f"unknown category '{category}' — valid: {sorted(VALID_CATEGORIES)}")
 
     note = str(note or "").strip()[:200]
-    return {"amount": amount, "category": match, "note": note}
+    return {"amount": amount, "category": match, "note": note, "kind": kind}
 
 
-def log_spend(amount, category, note=""):
+def log_spend(amount, category, note="", kind=None):
     """
     Validates and appends one spend entry to data/live_spend.jsonl.
     Returns the stored entry dict. Raises ValueError on bad input.
     """
-    fields = normalise_spend(amount, category, note)
+    fields = normalise_spend(amount, category, note, kind)
     entry = {
         "ts": datetime.datetime.now(TIMEZONE).isoformat(timespec="seconds"),
         **fields,
@@ -201,8 +235,11 @@ def get_live_summary(days=7):
     """
     Returns a dict summarising live-logged spend over the last N days:
       {available, total, count, by_category, days}
+
+    total, count, and by_category cover kind "spend" only. Fronted and
+    repaid entries are reimbursements, not my purchases; see outstanding().
     """
-    entries = load_entries(days=days)
+    entries = [e for e in load_entries(days=days) if entry_kind(e) == "spend"]
     if not entries:
         return {"available": False}
 
@@ -217,6 +254,35 @@ def get_live_summary(days=7):
         "by_category": by_cat,
         "days":        days,
     }
+
+
+def outstanding(end=None):
+    """Fronted minus repaid, over every entry dated on or before end (default today)."""
+    end = end or datetime.datetime.now(TIMEZONE).date()
+    total = 0.0
+    for e in entries_between(datetime.date.min, end):
+        kind = entry_kind(e)
+        if kind == "fronted":
+            total += e["amount"]
+        elif kind == "repaid":
+            total -= e["amount"]
+    return round(total, 2)
+
+
+def confirmation(entry, week_total):
+    """The short reply the Shortcut shows. A spend reply is unchanged from before kinds."""
+    kind = entry.get("kind", DEFAULT_KIND)
+    if kind == "fronted":
+        logged = f"${entry['amount']:.2f} {entry['category']} (fronted)"
+    elif kind == "repaid":
+        logged = f"${entry['amount']:.2f} paid back"
+    else:
+        logged = f"${entry['amount']:.2f} {entry['category']}"
+    body = {"ok": True, "logged": logged, "week_total": f"${week_total:.2f}"}
+    if kind != DEFAULT_KIND:
+        body["kind"] = kind
+        body["outstanding"] = f"${outstanding():.2f}"
+    return body
 
 
 # ── HTTP server ───────────────────────────────────────────────────────────────
@@ -237,15 +303,12 @@ def create_app():
             return jsonify({"error": "unauthorized"}), 401
         body = request.get_json(silent=True) or {}
         try:
-            entry = log_spend(body.get("amount"), body.get("category"), body.get("note", ""))
+            entry = log_spend(body.get("amount"), body.get("category"),
+                              body.get("note", ""), body.get("kind"))
         except ValueError as e:
             return jsonify({"error": str(e)}), 400
-        week_total = get_live_summary(days=7).get("total", entry["amount"])
-        return jsonify({
-            "ok": True,
-            "logged": f"${entry['amount']:.2f} {entry['category']}",
-            "week_total": f"${week_total:.2f}",
-        })
+        week_total = get_live_summary(days=7).get("total", 0.0)
+        return jsonify(confirmation(entry, week_total))
 
     @app.get("/health")
     def health():
@@ -266,6 +329,9 @@ def _print_summary():
     print(f"Live-logged (7d): ${s['total']:.2f} across {s['count']} entries")
     for cat, amt in sorted(s["by_category"].items(), key=lambda x: -x[1]):
         print(f"  {cat:<18} ${amt:.2f}")
+    owed = outstanding()
+    if owed:
+        print(f"Owed back to you (fronted - repaid): ${owed:.2f}")
 
 
 if __name__ == "__main__":

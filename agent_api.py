@@ -127,7 +127,7 @@ _TRANSFER_LINE = re.compile(r"(?i)\b(?:osko|sct|payid)\b")
 _PAYEE_TAIL = re.compile(r"(?i)\s+[A-Za-z]+\s+[A-Za-z]+\s*$")
 _REDACTED = "[redacted]"
 _IDEMPOTENCY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
-_SPEND_BODY_KEYS = {"actor", "reason", "amount", "category", "note"}
+_SPEND_BODY_KEYS = {"actor", "reason", "amount", "category", "note", "kind"}
 _SPEND_DEDUPE_WINDOW = datetime.timedelta(seconds=60)
 _FLAGGED_DESCRIPTION_LIMIT = 80
 _SAMPLE_LIMIT = 45
@@ -758,25 +758,24 @@ def apply_area_patch(name, body):
     return result
 
 
-def log_spend_entry(amount, category, note=""):
+def log_spend_entry(amount, category, note="", kind=None):
     """
     Validate and append one live-spend entry via live_spend.log_spend.
 
     Raises ValueError on bad input. Returns the same confirmation shape the
     Back Tap endpoint uses, plus the stored entry.
     """
-    from live_spend import get_live_summary, log_spend
-    entry = log_spend(amount, category, note)
-    week_total = get_live_summary(days=7).get("total", entry["amount"])
+    from live_spend import confirmation, get_live_summary, log_spend
+    entry = log_spend(amount, category, note, kind)
+    week_total = get_live_summary(days=7).get("total", 0.0)
     return {
-        "ok": True,
-        "logged": f"${entry['amount']:.2f} {entry['category']}",
-        "week_total": f"${week_total:.2f}",
+        **confirmation(entry, week_total),
         "entry": {
             "ts": entry["ts"],
             "amount": entry["amount"],
             "category": entry["category"],
             "note": entry["note"],
+            "kind": entry["kind"],
         },
     }
 
@@ -794,14 +793,17 @@ def _clean_idempotency_key(raw):
 
 
 def _spend_fingerprint(target):
-    """Comparable (amount, category, note) for a spend audit target."""
+    """Comparable (amount, category, note, kind) for a spend audit target.
+
+    Audit lines written before kinds existed have no kind; they were spends.
+    """
     if not isinstance(target, dict):
         return None
     try:
         amount = round(float(target.get("amount")), 2)
     except (TypeError, ValueError):
         return None
-    return (amount, target.get("category"), target.get("note"))
+    return (amount, target.get("category"), target.get("note"), target.get("kind") or "spend")
 
 
 def _audit_time(raw):
@@ -838,8 +840,8 @@ def _find_spend_replay(identity, key):
     """Return a prior spend response when this request is a retry.
 
     A repeated Idempotency-Key replays that spend at any age, and 409s when
-    the amount, category, or note differ. With no key, the same
-    amount+category+note inside 60 seconds is one spend. Caller holds the
+    the amount, category, note, or kind differ. With no key, the same
+    amount+category+note+kind inside 60 seconds is one spend. Caller holds the
     audit lock.
     """
     fingerprint = _spend_fingerprint(identity)
@@ -868,8 +870,9 @@ def apply_spend(body, idempotency_key=None):
     bot name. A body actor is accepted and ignored, even when it is blank or
     malformed, so existing callers are not rejected. Optional reason is
     audit-only. Idempotency-Key, when present, replays the original
-    response. Without it, an identical amount, category, and note inside
-    60 seconds is not written a second time.
+    response. Without it, an identical amount, category, note, and kind
+    inside 60 seconds is not written a second time. kind is spend (default),
+    fronted, or repaid; see live_spend.
     """
     _json_object(body)
     _reject_unknown_fields(body, _SPEND_BODY_KEYS)
@@ -878,13 +881,15 @@ def apply_spend(body, idempotency_key=None):
     reason = _reason(body)
     key = _clean_idempotency_key(idempotency_key)
     from live_spend import normalise_spend
-    identity = normalise_spend(body.get("amount"), body.get("category"), body.get("note", ""))
+    identity = normalise_spend(body.get("amount"), body.get("category"), body.get("note", ""),
+                               body.get("kind"))
 
     with file_lock(AUDIT_FILE):
         replay = _find_spend_replay(identity, key)
         if replay is not None:
             return replay
-        result = log_spend_entry(identity["amount"], identity["category"], identity["note"])
+        result = log_spend_entry(identity["amount"], identity["category"], identity["note"],
+                                 kind=identity["kind"])
         entry = _audit_entry(
             actor,
             "spend",
@@ -1334,8 +1339,9 @@ def get_spending_payload(start, end):
     Everyday-account spend for an inclusive range, versus the weekly budget.
 
     Category totals use finance_tracker.summarise_spending: card, BPAY and
-    direct debit lines plus Back Tap logged spends. transfers lists Osko,
-    Sct, PayID and NPP lines, which are not counted.
+    direct debit lines plus Back Tap logged spends, less logged fronted
+    shares. transfers lists Osko, Sct, PayID and NPP lines, which are not
+    counted. reimbursements has fronted, repaid, and outstanding.
     No raw descriptions leave this function without account-number redaction.
     """
     import finance_tracker
