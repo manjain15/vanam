@@ -48,7 +48,7 @@ import pytz
 import config
 
 try:
-    from live_spend import entries_between
+    from live_spend import entries_between, entry_kind
     LIVE_SPEND_AVAILABLE = True
 except Exception:
     LIVE_SPEND_AVAILABLE = False
@@ -540,8 +540,13 @@ def _cents(amount):
 # payer (wages paid by Osko). The rest are listed, marked not counted. Spends logged with the Back Tap
 # shortcut (live_spend.py) count as logged. A card refund reduces an
 # earlier card purchase at the same merchant inside the refund window.
+# A logged "fronted" entry (my share of nothing: I paid for others) comes
+# off spending. A logged "repaid" entry is money back: it pairs with one
+# transfer in of the same amount within REPAID_MATCH_DAYS, which is then
+# listed as a repaid transfer, never income.
 
 TRANSFER_RAIL = "transfer"
+REPAID_MATCH_DAYS = 7
 _SPEND_RAILS = ("card", "bpay", "direct_debit", "other")
 _REFUND_HINTS = ("refund", "reversal", "chargeback", "visa credit", "eftpos credit")
 _MERCHANT_NOISE = {
@@ -628,8 +633,8 @@ def _net_card_refunds(spends, refunds, window_days):
             left = round(left - take, 2)
 
 
-def _logged_spends(start, end):
-    """Back Tap entries dated inside the window, as spending lines."""
+def _logged_entries(start, end, kind=None):
+    """Back Tap entries dated inside the window, optionally of one kind. [] when unavailable."""
     if not LIVE_SPEND_AVAILABLE:
         return []
     try:
@@ -637,6 +642,14 @@ def _logged_spends(start, end):
     except Exception as exc:
         print(f"⚠️  logged spends unavailable: {exc}")
         return []
+    if kind is None:
+        return entries
+    return [entry for entry in entries if entry_kind(entry) == kind]
+
+
+def _logged_spends(start, end):
+    """Back Tap spend entries dated inside the window, as spending lines."""
+    entries = _logged_entries(start, end, kind="spend")
     return [
         {
             "date": entry["date"],
@@ -693,6 +706,7 @@ def _classified(transactions, start, end):
             income.append({**row, "source": "Direct credit" if rail == "direct_credit" else "Other"})
 
     _net_card_refunds(spends, refunds, window_days)
+    _mark_repaid(income, transfers, start, end)
     spending = [
         {
             "date": spend["date"],
@@ -707,6 +721,126 @@ def _classified(transactions, start, end):
     spending.extend(_logged_spends(start, end))
     transfers.sort(key=lambda item: (item["date"], -item["amount"]))
     return {"spending": spending, "income": income, "transfers": transfers}
+
+
+def _as_date(value):
+    """A date from a date or an ISO string."""
+    return value if isinstance(value, datetime.date) else datetime.date.fromisoformat(value)
+
+
+def _mark_repaid(income, transfers, start, end):
+    """
+    Pair each logged repayment with one bank transfer in of the same amount.
+
+    The match is exact to the cent and dated within REPAID_MATCH_DAYS of
+    the logged entry, nearest date first. A matched income row (a listed
+    payer) moves to transfers. Every matched transfer is tagged repaid.
+    Edits both lists in place.
+    """
+    pad = datetime.timedelta(days=REPAID_MATCH_DAYS)
+    repaid = _logged_entries(start - pad, end + pad, kind="repaid")
+    if not repaid:
+        return
+    candidates = [("income", row) for row in income if rail_of(row["description"]) == TRANSFER_RAIL]
+    candidates += [("transfers", row) for row in transfers if row["direction"] == "in"]
+    used = set()
+    for entry in sorted(repaid, key=lambda e: e["ts"]):
+        cents = _cents(entry["amount"])
+        options = [
+            (abs((_as_date(row["date"]) - entry["date"]).days), _as_date(row["date"]), index)
+            for index, (_pool, row) in enumerate(candidates)
+            if index not in used and _cents(row["amount"]) == cents
+            and abs((_as_date(row["date"]) - entry["date"]).days) <= REPAID_MATCH_DAYS
+        ]
+        if not options:
+            continue
+        index = min(options)[2]
+        used.add(index)
+        pool, row = candidates[index]
+        if pool == "income":
+            income.remove(row)
+            transfers.append({
+                "date": _as_date(row["date"]).isoformat(),
+                "description": row["description"],
+                "amount": row["amount"],
+                "direction": "in",
+                "repaid": True,
+            })
+        else:
+            row["repaid"] = True
+
+
+def _deduct_fronted(by_category, start, end):
+    """
+    Take fronted shares in the window off my spending, in place.
+
+    Each share comes off its own category first, then off the largest other
+    categories, so the total is right even when the purchase was filed under
+    a different category. Spending never goes below zero. Returns the part
+    that had nothing to come off (fronted with no counted purchase).
+    """
+    left_over = 0.0
+    for entry in _logged_entries(start, end, kind="fronted"):
+        left = round(entry["amount"], 2)
+        order = [entry["category"]] + sorted(
+            (cat for cat in by_category if cat != entry["category"]),
+            key=lambda cat: -by_category[cat],
+        )
+        for cat in order:
+            if left <= 0:
+                break
+            take = min(left, by_category.get(cat, 0.0))
+            if take > 0:
+                by_category[cat] = round(by_category[cat] - take, 2)
+                left = round(left - take, 2)
+        left_over += left
+    for cat in [cat for cat, amount in by_category.items() if amount <= 0]:
+        del by_category[cat]
+    return round(left_over, 2)
+
+
+def _reimbursement_summary(start, end):
+    """
+    Fronted and repaid entries for the window, and what is still owed.
+
+    fronted_total and repaid_total cover the window. outstanding is every
+    fronted entry dated on or before end minus every repaid one, so a
+    repayment in a later week clears an earlier fronted amount. open lists
+    the fronted entries not yet repaid: each repayment pays off a fronted
+    entry of the same amount first, then the oldest.
+    """
+    entries = [e for e in _logged_entries(datetime.date.min, end) if entry_kind(e) != "spend"]
+    entries.sort(key=lambda e: e["ts"])
+    fronted = [{**e, "remaining": round(e["amount"], 2)} for e in entries if entry_kind(e) == "fronted"]
+    for repaid in (e for e in entries if entry_kind(e) == "repaid"):
+        left = round(repaid["amount"], 2)
+        exact = next((f for f in fronted if _cents(f["remaining"]) == _cents(left)), None)
+        for item in ([exact] if exact else []) + [f for f in fronted if f is not exact]:
+            if left <= 0:
+                break
+            take = min(left, item["remaining"])
+            item["remaining"] = round(item["remaining"] - take, 2)
+            left = round(left - take, 2)
+
+    def _row(entry):
+        return {
+            "date": entry["date"].isoformat(),
+            "kind": entry_kind(entry),
+            "amount": round(entry["amount"], 2),
+            "category": entry["category"],
+            "note": entry.get("note") or "",
+        }
+
+    in_range = [e for e in entries if start <= e["date"] <= end]
+    fronted_total = sum(e["amount"] for e in entries if entry_kind(e) == "fronted")
+    repaid_total = sum(e["amount"] for e in entries if entry_kind(e) == "repaid")
+    return {
+        "fronted_total": round(sum(e["amount"] for e in in_range if entry_kind(e) == "fronted"), 2),
+        "repaid_total": round(sum(e["amount"] for e in in_range if entry_kind(e) == "repaid"), 2),
+        "outstanding": round(fronted_total - repaid_total, 2),
+        "items": [_row(e) for e in in_range],
+        "open": [{**_row(f), "remaining": f["remaining"]} for f in fronted if f["remaining"] > 0],
+    }
 
 
 def _load_sheet_items():
@@ -772,7 +906,7 @@ def analyse_spending(transactions, days=7, extra_inflows=None):
     Analyses spending from the everyday account over the last N days.
 
     Uses the same rule as summarise_spending: card, BPAY and direct debit
-    lines net of card refunds, plus logged spends. Transfers are reported
+    lines net of card refunds, plus logged spends, less fronted shares. Transfers are reported
     beside the total, not in it. extra_inflows is ignored: another account
     cannot cancel this one.
     """
@@ -786,9 +920,10 @@ def analyse_spending(transactions, days=7, extra_inflows=None):
     for txn in recent:
         cat = txn["category"]
         category_totals[cat] = category_totals.get(cat, 0) + txn["debit"]
+    _deduct_fronted(category_totals, cutoff, today)
 
     big_transactions = [txn for txn in recent if txn["debit"] >= 80]
-    total_spend = sum(txn["debit"] for txn in recent)
+    total_spend = sum(category_totals.values())
 
     return {
         "category_totals": category_totals,
@@ -1434,7 +1569,11 @@ def summarise_spending(transactions, start, end, weekly_budget, extra_inflows=No
     spends dated in the range are added as they are. Own-account moves and
     Revolut card top-ups are dropped. Transfers (Osko, Sct, PayID, NPP) are
     listed under transfers with counted false; they are never spending or
-    income. Commission is the reselling sheet rows dated in the range.
+    income, except pay from a listed income payer. Logged fronted shares
+    come off spending; logged repayments pair with a transfer in, which is
+    then never income. reimbursements has the fronted and repaid totals for
+    the range and the running outstanding balance. Commission is the
+    reselling sheet rows dated in the range.
     Descriptions on flagged rows are the full bank line. extra_inflows is
     ignored.
     """
@@ -1447,6 +1586,8 @@ def summarise_spending(transactions, start, end, weekly_budget, extra_inflows=No
         cat = txn.get("category") or "Other"
         by_category[cat] = by_category.get(cat, 0) + txn["debit"]
     by_category = {cat: round(amount, 2) for cat, amount in by_category.items()}
+    reimbursements = _reimbursement_summary(start, end)
+    reimbursements["not_deducted"] = _deduct_fronted(by_category, start, end)
 
     total = round(sum(by_category.values()), 2)
     span_days = (end - start).days + 1
@@ -1490,6 +1631,7 @@ def summarise_spending(transactions, start, end, weekly_budget, extra_inflows=No
         "transfers": _transfer_summary(classified["transfers"]),
         "commission": _sheet_commission(start, end),
         "income": income,
+        "reimbursements": reimbursements,
     }
 
 

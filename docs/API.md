@@ -284,7 +284,18 @@ The weekly rule:
 3. Spends logged with the Back Tap shortcut (`POST /spend`, stored in
    `data/live_spend.jsonl`) count in full, in the category given, when
    their date is inside the window. They are transfer purchases, which
-   never appear as card lines, so there is no duplicate check.
+   never appear as card lines, so there is no duplicate check. Only
+   `kind: "spend"` entries count here; an entry with no `kind` is a spend.
+4. A logged `fronted` entry (the others' share of something you paid for)
+   comes off spending: first its own category, then the largest other
+   categories, never below zero. Log it alongside the purchase that counts
+   (the card line, or a logged spend for the full amount).
+5. A logged `repaid` entry is never spending. It is paired with one
+   transfer in of exactly the same amount dated within 7 days of it
+   (nearest first). That transfer is tagged `repaid: true` under
+   `transfers`, and is not income even when its payer is listed under
+   `spending.income_payers`. A repayment with no matching transfer still
+   reduces `outstanding`.
 
 `transfers` lists the transfers in the window for reference: `counted`
 (always false), `count`, `total_in`, `total_out`, and `items` (`date`,
@@ -292,7 +303,35 @@ The weekly rule:
 on it. `logged` is how much of `total_spend` came from Back Tap entries
 (`count`, `total`). `income` is direct credits, other credits that are not
 transfers or card refunds, and transfers in from a listed income payer
-(`source` is the matching phrase).
+(`source` is the matching phrase), less any paired with a logged repayment.
+
+`reimbursements` covers money fronted for other people:
+
+```
+"reimbursements": {
+  "fronted_total": 60.0,
+  "repaid_total": 25.0,
+  "outstanding": 35.0,
+  "not_deducted": 0.0,
+  "items": [
+    {"date": "2030-03-05", "kind": "fronted", "amount": 60.0, "category": "Food & dining", "note": "dinner"},
+    {"date": "2030-03-07", "kind": "repaid", "amount": 25.0, "category": "Other", "note": ""}
+  ],
+  "open": [
+    {"date": "2030-03-05", "kind": "fronted", "amount": 60.0, "category": "Food & dining", "note": "dinner", "remaining": 35.0}
+  ]
+}
+```
+
+`fronted_total`, `repaid_total`, and `items` cover entries dated inside the
+window. `outstanding` is a running balance: every fronted entry dated on or
+before `end` minus every repaid one, so a repayment next week clears this
+week's fronted amount. It can therefore differ from `fronted_total -
+repaid_total`, and it is negative if more came back than was fronted.
+`open` lists fronted entries not yet fully repaid, with `remaining`. Each
+repayment pays off a fronted entry of the same amount first, then the
+oldest. `not_deducted` is fronted money that had no spending left in the
+window to come off (usually a fronted entry logged without its purchase).
 
 `commission` is the reselling sheet (`manj`, tab `general`): sold rows
 whose name contains "commission" and whose sale date is inside the window.
@@ -416,11 +455,26 @@ the bearer token (`owner` for `JARVIS_API_TOKEN`, or the bot name). A body
 Optional `reason` is stored in the audit log only. A successful call appends
 `data/agent_api_audit.jsonl` with `action: "spend"`.
 
+Optional `kind` says what the money was. It is the same on `POST /spend`
+and on the Back Tap logger (port 5556). Leave it out to keep the old
+behaviour.
+
+| `kind` | Meaning | Effect |
+| --- | --- | --- |
+| `spend` (default) | My own purchase | Counts in full in `category` |
+| `fronted` | I paid for others; `amount` is their share | Comes off my spending; adds to `outstanding` |
+| `repaid` | Money paid back to me | Never spending or income; reduces `outstanding` |
+
+`category` is required for `spend` and `fronted` (use the category of the
+purchase). It is optional for `repaid` and stored as `Other`. Any other
+`kind`, or `null`, is 400. Lines in `data/live_spend.jsonl` written before
+this field existed have no `kind` and are spends.
+
 Send `Idempotency-Key` to make a retry return the original JSON instead of
 logging a second spend. Reusing that key for a different amount, category,
-or note returns 409. A retry that omits the header is still collapsed when
-amount, category, and note match a spend from the last 60 seconds. A
-different key is a new spend even inside that window.
+note, or kind returns 409. A retry that omits the header is still collapsed
+when amount, category, note, and kind match a spend from the last 60
+seconds. A different key is a new spend even inside that window.
 
 `POST /ask`, `POST /spend`, and the term-context writes require a JSON
 object. An array, string, number, or invalid body is 400.
@@ -434,6 +488,43 @@ curl -sS -H "Authorization: Bearer $JARVIS_API_TOKEN" \
 ```
 
 `{"ok": true, "logged": "$14.50 Food & dining", "week_total": "$14.50", "entry": {...}}`
+
+A spend reply is the same as before `kind` existed, plus `entry.kind`.
+`week_total` is logged spends only (kind `spend`, last 7 days). Fronted and
+repaid replies add `kind` and `outstanding`:
+
+```
+curl -sS -H "Authorization: Bearer $JARVIS_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"amount": 60, "category": "Food & dining", "note": "dinner, two others", "kind": "fronted"}' \
+  https://<your-host>/spend
+```
+
+`{"ok": true, "logged": "$60.00 Food & dining (fronted)", "week_total": "$14.50", "kind": "fronted", "outstanding": "$60.00", "entry": {...}}`
+
+A repayment: `{"amount": 60, "kind": "repaid", "note": "dinner"}` replies
+`"logged": "$60.00 paid back"` and the new `outstanding`.
+
+#### iPhone Shortcut
+
+The existing Back Tap shortcut keeps working unchanged: it sends no `kind`.
+To log reimbursements, add a menu before the amount prompt:
+
+1. **Choose from Menu**: `Spend`, `Fronted for others`, `Paid back`.
+2. In each branch, set a variable `kind` to `spend`, `fronted`, or
+   `repaid`.
+3. Ask for the amount. For `Fronted for others`, ask for the others' share,
+   not the whole bill.
+4. Ask for the category in the `Spend` and `Fronted for others` branches
+   (use the purchase's category). `Paid back` can skip it.
+5. Add `kind` to the JSON body of the existing **Get Contents of URL**
+   step (POST, `X-Jarvis-Token` header unchanged):
+   `{"amount": …, "category": …, "note": …, "kind": kind}`.
+6. Show `logged` and, when present, `outstanding` in the notification.
+
+For a card purchase you split, log only the others' share as `fronted`: the
+card line already counts the full amount. For a transfer purchase (no card
+line), log the full amount as `spend` and the others' share as `fronted`.
 
 ### Phone events
 

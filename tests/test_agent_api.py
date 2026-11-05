@@ -154,7 +154,7 @@ def test_flags_context_memory_spend_are_wired(monkeypatch, tmp_path):
     monkeypatch.setattr(agent_api, "get_flags_payload", lambda: {"flags": ["due soon"], "academic_alerts": [], "unavailable": []})
     monkeypatch.setattr(agent_api, "get_context_payload", lambda days_ahead: {"days_ahead": days_ahead, "deadlines": []})
     monkeypatch.setattr(agent_api, "search_memory_payload", lambda query, limit=5: {"query": query, "limit": limit, "text": "remembered"})
-    monkeypatch.setattr(agent_api, "log_spend_entry", lambda amount, category, note="": {
+    monkeypatch.setattr(agent_api, "log_spend_entry", lambda amount, category, note="", kind=None: {
         "ok": True, "logged": "$4.00 Other", "week_total": "$4.00",
         "entry": {"amount": amount, "category": category, "note": note},
     })
