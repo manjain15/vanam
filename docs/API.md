@@ -237,7 +237,7 @@ A missing CSV is `available: false` inside that section and is not an error.
 Sensitive text in bank descriptions is replaced with `[redacted]` before the
 response is sent, and only then shortened. That covers a run of 8 or more
 digits, the same run with spaces or dashes (card numbers, spaced account
-numbers, phone numbers), a masked last-4 such as `xx1234` or `**5228`, and
+numbers, phone numbers), a masked last-4 such as `xx1234` or `**9999`, and
 email addresses (PayID). On an Osko, Sct, or PayID line the trailing payee
 name is removed as well. Dollar amounts, ISO dates (`2026-09-28`), and
 category names are unchanged. `flagged[].description` is capped at 80
@@ -262,10 +262,16 @@ curl -sS -H "Authorization: Bearer $JARVIS_API_TOKEN" \
 
 `by_category` is everyday-account spending. Own-account moves are left out:
 internet withdrawal and deposit, transfer to or from savings, Osko/Sct to
-an owner name, and a Revolut card top-up (`Revolut**5228`, or a bare
-`revolut` on a card rail). The bare word `transfer` is not enough. Names
-and card patterns default to Manav Jain / Revolut and can be overridden
-under `own_accounts` in `term_context.json`.
+an owner name, and a Revolut card top-up (a masked card such as
+`Revolut**1234`, or a bare `revolut` on a card rail). The bare word
+`transfer` is not enough. Set your own name and card under `own_accounts`
+in `term_context.json`; the defaults have no owner name (so no Osko or
+Sct counts as a self-transfer until you add one) and only the bare
+`revolut` card pattern:
+
+```
+"own_accounts": {"owner_names": ["your name"], "card_patterns": ["revolut**1234", "revolut"]}
+```
 
 The weekly rule:
 

@@ -123,8 +123,12 @@ def collect_finance_trend(weeks=4):
         today = datetime.datetime.now(tz).date()
         txns  = parse_stgeorge_csv(EVERYDAY_CSV)
 
-        # Own account transfers to exclude
-        own_accounts = ["0000206850220", "0000436436454", "0000444502124"]
+        # Own account transfers to exclude (own_accounts.account_numbers in term_context.json)
+        try:
+            from term_context import get_own_account_rules
+            own_accounts = get_own_account_rules().get("account_numbers") or []
+        except Exception:
+            own_accounts = []
 
         weekly = []
         for w in range(weeks):

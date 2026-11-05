@@ -47,3 +47,18 @@ def _isolated_spending_sources(tmp_path, monkeypatch):
         monkeypatch.setattr(finance_tracker, "_load_sheet_items", lambda: [])
     except Exception:
         pass
+
+
+@pytest.fixture(autouse=True)
+def _test_account_owner(monkeypatch):
+    """
+    The code defaults name no owner. Tests use a fictional one, Alex Sample,
+    with a masked Revolut card ending 9999, as if term_context.json set
+    own_accounts. A test that writes own_accounts still overrides this.
+    """
+    try:
+        import term_context
+    except Exception:
+        return
+    monkeypatch.setitem(term_context.DEFAULT_OWN_ACCOUNT_RULES, "owner_names", ["alex sample"])
+    monkeypatch.setitem(term_context.DEFAULT_OWN_ACCOUNT_RULES, "card_patterns", ["revolut**9999", "revolut"])

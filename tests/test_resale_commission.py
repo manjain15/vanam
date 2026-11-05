@@ -1,7 +1,7 @@
 """Commission income is the reselling sheet, counted once.
 
-For the Nilesh stock, the sheet row is 'banga selling commission': sold
-$13,870, commission $1,387, so $12,483 is due. The bank deposits and
+For the consigned stock, the sheet row is 'trader selling commission': sold
+$12,650, commission $1,265, so $11,385 is due. The bank deposits and
 forwards are transfers. They are not the commission and not spending.
 """
 
@@ -18,13 +18,13 @@ import finance_tracker
 from reselling_tracker import Item
 from test_passthrough import FORWARDS, _day, _summary, _txn
 
-COMMISSION = 1387.0
-SOLD = 13870.0
-DUE = 12483.0
+COMMISSION = 1265.0
+SOLD = 12650.0
+DUE = 11385.0
 
 
 def _commission(sale_date=datetime.datetime(2026, 10, 25), sale_price=SOLD,
-                sheet_net=COMMISSION, name="banga selling commission"):
+                sheet_net=COMMISSION, name="trader selling commission"):
     return Item(
         status="sold",
         category="Other",
@@ -39,9 +39,9 @@ def _commission(sale_date=datetime.datetime(2026, 10, 25), sale_price=SOLD,
 def _resale_week():
     return [
         _txn(_day(26), "Osko Deposit 26Oct Buyer F40", credit=11374.37),
-        _txn(_day(26), "Osko Withdrawal 26Oct09:19 F40S Nilesh Banga", debit=4932),
-        _txn(_day(25), "Osko Withdrawal 25Oct13:01 Ferraris Nilesh Banga", debit=4061),
-        _txn(_day(25), "Osko Withdrawal 25Oct13:03 American Nilesh Banga", debit=2000),
+        _txn(_day(26), "Osko Withdrawal 26Oct09:19 F40S Sam Trader", debit=4810),
+        _txn(_day(25), "Osko Withdrawal 25Oct13:01 Ferraris Sam Trader", debit=3975),
+        _txn(_day(25), "Osko Withdrawal 25Oct13:03 American Sam Trader", debit=2215),
         _txn(_day(22), "Visa Purchase Woolworths Sydney", debit=40),
     ]
 
@@ -55,7 +55,7 @@ def test_sheet_commission_is_the_income(monkeypatch):
     row = summary["commission"]["rows"][0]
     assert row["sold"] == SOLD
     assert row["due"] == DUE
-    assert row["party"] == "banga"
+    assert row["party"] == "trader"
     assert summary["transfers"]["total_out"] == FORWARDS
 
 

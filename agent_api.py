@@ -117,7 +117,7 @@ _TAG_RE = re.compile(r"<[^>]+>")
 _BREAK_RE = re.compile(r"<br\s*/?>|</p>|</h[1-6]>|</li>|</div>|</tr>", re.I)
 # 8+ digits, including spaces or dashes between them (cards, spaced account
 # and phone numbers). Calendar dates are restored by the replacer. Masked
-# last-4s (xx1234, **5228) and PayID emails are separate patterns.
+# last-4s (xx1234, **9876) and PayID emails are separate patterns.
 _SEP_NUMBER = re.compile(r"(?<!\d)(?:\d[ -]*){7,}\d(?!\d)")
 _MASKED_LAST4 = re.compile(r"(?i)(?<!\d)(?:x{2,}|\*{2,})[ -]?\d{3,4}(?!\d)")
 _EMAIL = re.compile(
