@@ -971,3 +971,11 @@ def test_replan_drops_a_started_but_unanswered_block():
     assert ledger.find_item(ledger.load_day(TUESDAY), first["id"]) is None or \
         ledger.find_item(ledger.load_day(TUESDAY), first["id"])["start"] >= "2026-10-13T17:45"
     assert first["event_id"] in cal2.deleted
+
+
+def test_topic_label_single_word_topics_do_not_hang():
+    """One-word topics with no common prefix used to loop forever (watchdog restarts)."""
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(1) as pool:
+        future = pool.submit(day_plan._topic_label, ["topics: Graphs; Trees"])
+        assert future.result(timeout=2) == "Graphs"
