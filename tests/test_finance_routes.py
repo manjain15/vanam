@@ -17,7 +17,7 @@ import term_context
 
 TOKEN = "test-token"
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
-ACCOUNT = "0000206850220"
+ACCOUNT = "0000123456789"
 OTHER_ACCOUNT = "000099998888"
 
 
@@ -259,21 +259,21 @@ def test_own_account_transfers_are_not_spending(tmp_path, monkeypatch):
         return [_dmy(today), description, debit, credit, "1000.00"]
 
     _write_csv(everyday, [
-        row("Osko Withdrawal 22Sep Knockout R Jaiswal", "120.00"),
-        row("Osko Withdrawal 23Sep Knockout R Jaiswal", "120.00"),
-        row("Osko Withdrawal 24Sep Doomsday Tix Abhishek Goyal", "25.00"),
+        row("Osko Withdrawal 22Sep Knockout L Example", "120.00"),
+        row("Osko Withdrawal 23Sep Knockout L Example", "120.00"),
+        row("Osko Withdrawal 24Sep Doomsday Tix Pat Demo", "25.00"),
         row("Visa Purchase 24Sep Playstation London", "14.95"),
         row("Visa Purchase 24Sep Paypal *Guzmanygome", "3.60"),
         row("Visa Purchase 22Sep Tfnsw Opal", "6.90"),
         row("Visa Purchase 23Sep Tfnsw Opal", "4.80"),
-        row("Osko Withdrawal 25Sep Change For Hot Wheels W Tynan", "10.00"),
-        row("Osko Withdrawal 24Sep12:03 Kmart 30Th Manav Jain", "5000.00"),
-        row("Osko Withdrawal 24Sep12:12 Test Manav Jain", "1.00"),
-        row("Osko Withdrawal 27Sep20:42 Op 17 Blisters Manav Jain", "54.00"),
-        row("Visa Purchase 24Sep Revolut**5228* Melbourne", "6000.00"),
-        row("Visa Purchase 22Sep Revolut**5228* Melbourne", "390.00"),
-        row("Visa Purchase 22Sep Revolut**5228* Melbourne", "135.00"),
-        row("Sct Deposit 24Sep Sent From Revolut Manav Jain", "", "1.00"),
+        row("Osko Withdrawal 25Sep Change For Hot Wheels W Demo", "10.00"),
+        row("Osko Withdrawal 24Sep12:03 Kmart 30Th Alex Sample", "5000.00"),
+        row("Osko Withdrawal 24Sep12:12 Test Alex Sample", "1.00"),
+        row("Osko Withdrawal 27Sep20:42 Op 17 Blisters Alex Sample", "54.00"),
+        row("Visa Purchase 24Sep Revolut**9999* Melbourne", "6000.00"),
+        row("Visa Purchase 22Sep Revolut**9999* Melbourne", "390.00"),
+        row("Visa Purchase 22Sep Revolut**9999* Melbourne", "135.00"),
+        row("Sct Deposit 24Sep Sent From Revolut Alex Sample", "", "1.00"),
     ])
     _write_csv(savings, [[_dmy(today), "Interest", "", "1.00", "8000.00"]])
 
@@ -331,9 +331,9 @@ def test_refund_reduces_spending_for_the_week(tmp_path, monkeypatch):
         row(today, "Visa Refund 23Sep09:11 Knockout Tickets", "", "120.00"),
         row(today, "Visa Purchase 23Sep10:30 Knockout Tickets", "120.00"),
         row(today, "Visa Purchase 24Sep Playstation London", "14.95"),
-        row(today, "Osko Withdrawal 25Sep Change For Hot Wheels W Tynan", "10.00"),
-        row(today, "Osko Deposit 24Sep Pokemon Gemma Johnston", "", "390.00"),
-        row(today, "Osko Deposit 27Sep Nilesh Banga", "", "17000.00"),
+        row(today, "Osko Withdrawal 25Sep Change For Hot Wheels W Demo", "10.00"),
+        row(today, "Osko Deposit 24Sep Pokemon Gem Buyer", "", "390.00"),
+        row(today, "Osko Deposit 27Sep Sam Trader", "", "16500.00"),
     ])
     res = _client().get("/finance/spending", headers=AUTH)
     assert res.status_code == 200
@@ -341,7 +341,7 @@ def test_refund_reduces_spending_for_the_week(tmp_path, monkeypatch):
     assert body["total_spend"] == 134.95
     assert body["by_category"]["Entertainment"] == 134.95
     assert [item["amount"] for item in body["flagged"]] == [120.0]
-    assert body["transfers"]["total_in"] == 17390.0
+    assert body["transfers"]["total_in"] == 16890.0
     assert body["income"] == []
 
 
@@ -364,21 +364,21 @@ def test_redact_each_sensitive_shape():
         "spaced phone": "0412 345 678",
         "dashed phone": "0412-345-678",
         "masked last4": "xx1234",
-        "masked stars": "card **5228",
-        "payid email": "alex.jain+rent@payid.com.au",
+        "masked stars": "card **9999",
+        "payid email": "alex.sample+rent@payid.example.com",
     }
     for label, secret in shapes.items():
         cleaned = agent_api.redact_account_numbers(f"paid {secret} today")
         assert secret not in cleaned, label
         assert "[redacted]" in cleaned, label
 
-    osko = agent_api.redact_account_numbers("Osko Withdrawal 22Sep Knockout R Jaiswal")
-    assert "Jaiswal" not in osko
+    osko = agent_api.redact_account_numbers("Osko Withdrawal 22Sep Knockout L Example")
+    assert "Example" not in osko
     assert "Knockout" in osko
     assert "[redacted]" in osko
-    sct = agent_api.redact_account_numbers("Sct Deposit 23Sep09:11 Rishi Jaiswal")
-    assert "Jaiswal" not in sct
-    assert "Rishi" not in sct
+    sct = agent_api.redact_account_numbers("Sct Deposit 23Sep09:11 Lee Example")
+    assert "Example" not in sct
+    assert "Lee" not in sct
 
 
 def test_flagged_description_is_redacted_before_truncation(tmp_path, monkeypatch):
@@ -391,7 +391,7 @@ def test_flagged_description_is_redacted_before_truncation(tmp_path, monkeypatch
     spaced = "Visa Purchase SHOP 4111 1111 1111 1111"
     _write_csv(everyday, [
         [_dmy(today), desc, "200.00", "", "100.00"],
-        [_dmy(today), "Osko Withdrawal 22Sep Knockout R Jaiswal", "120.00", "", "100.00"],
+        [_dmy(today), "Osko Withdrawal 22Sep Knockout L Example", "120.00", "", "100.00"],
         [_dmy(today), spaced, "90.00", "", "100.00"],
     ])
     res = _client().get("/finance/spending", headers=AUTH)
@@ -401,7 +401,7 @@ def test_flagged_description_is_redacted_before_truncation(tmp_path, monkeypatch
     assert pan not in text
     assert fragment not in text
     assert "4111" not in text
-    assert "Jaiswal" not in text
+    assert "Example" not in text
     assert "Knockout" in text
     assert all(len(row["description"]) <= 80 for row in flagged)
     long = next(row for row in flagged if row["amount"] == 200)

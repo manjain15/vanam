@@ -62,9 +62,9 @@ SAVINGS1_CSV  = FINANCE_DIR / "savings1.csv"
 INVESTING_CSV = FINANCE_DIR / "investing.csv"
 REVOLUT_CSV   = FINANCE_DIR / "revolut.csv"
 
-# Default owner name for Revolut transfers. Live checks use get_own_account_rules()
+# Default owner names for Revolut transfers (none; set own_accounts.owner_names). Live checks use get_own_account_rules()
 # so term_context.json "own_accounts" can override this without a code change.
-REVOLUT_OWN_NAMES = ("manav jain",)
+REVOLUT_OWN_NAMES = ()
 
 FINANCE_DIR.mkdir(exist_ok=True)
 
@@ -90,12 +90,13 @@ except Exception:
     def get_own_account_rules():
         """Fallback when term_context cannot be imported. Mirrors its defaults."""
         return {
-            "owner_names": ["manav jain"],
+            "owner_names": [],
             "withdrawal_markers": [
                 "osko withdrawal", "internet withdrawal", "sct withdrawal",
             ],
-            "card_patterns": ["revolut**5228", "revolut"],
+            "card_patterns": ["revolut"],
             "card_rails": ["visa purchase", "eftpos", "top-up", "topup"],
+            "account_numbers": [],
         }
 
     def get_refund_window_days():
@@ -189,7 +190,7 @@ def _keyword_matches(description_lower, keyword):
 def _is_own_card_topup(desc, rules):
     """True for a card top-up of an account the owner already holds.
 
-    A masked descriptor (Revolut**5228) matches on its own. A bare merchant
+    A masked descriptor (Revolut**1234) matches on its own. A bare merchant
     name such as 'revolut' only matches on a card rail, so an Osko reference
     that merely mentions Revolut is still spending.
     """

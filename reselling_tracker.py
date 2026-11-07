@@ -254,7 +254,7 @@ def _is_flip(item: Item) -> bool:
 
 
 def _commission_party(name):
-    """Who the commission row is for. 'banga selling commission' is banga."""
+    """Who the commission row is for. 'trader selling commission' is trader."""
     text = re.sub(r"\b(selling|sale|sales)\b", " ", name or "", flags=re.IGNORECASE)
     text = re.sub(r"\bcommission\b", " ", text, flags=re.IGNORECASE)
     text = re.sub(r"\s+", " ", text).strip()

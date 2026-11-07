@@ -1,9 +1,9 @@
 """Own-account transfers are not personal spending.
 
 The 22–28 Sep 2026 everyday-account week is the fixture: Osko withdrawals
-paid to Manav Jain and Revolut**5228 card top-ups must drop out of totals,
+paid to Alex Sample and Revolut**9999 card top-ups must drop out of totals,
 categories, flagged debits, and the subscription audit. Osko payments to
-other people (Knockout R Jaiswal) are transfers: listed, not counted.
+other people (Knockout L Example) are transfers: listed, not counted.
 Only the card lines are spending. No bank exports.
 """
 
@@ -52,23 +52,23 @@ def _write_stgeorge(path, rows):
 def _week_rows():
     """Everyday CSV rows for 22–28 Sep 2026, including padded self-transfers."""
     return [
-        ("22/09/2026", "Osko Withdrawal 22Sep Knockout R Jaiswal", "120.00", ""),
-        ("23/09/2026", "Osko Withdrawal 23Sep Knockout R Jaiswal", "120.00", ""),
-        ("24/09/2026", "Osko Withdrawal 24Sep Doomsday Tix Abhishek Goyal", "25.00", ""),
+        ("22/09/2026", "Osko Withdrawal 22Sep Knockout L Example", "120.00", ""),
+        ("23/09/2026", "Osko Withdrawal 23Sep Knockout L Example", "120.00", ""),
+        ("24/09/2026", "Osko Withdrawal 24Sep Doomsday Tix Pat Demo", "25.00", ""),
         ("24/09/2026", "Visa Purchase 24Sep Playstation London", "14.95", ""),
         ("24/09/2026", "Visa Purchase 24Sep Paypal *Guzmanygome", "3.60", ""),
         ("22/09/2026", "Visa Purchase 22Sep Tfnsw Opal", "6.90", ""),
         ("23/09/2026", "Visa Purchase 23Sep Tfnsw Opal", "4.80", ""),
-        ("25/09/2026", "Osko Withdrawal 25Sep Change For Hot Wheels W Tynan", "10.00", ""),
-        ("24/09/2026", "Osko Withdrawal  24Sep12:03   Kmart 30Th   Manav Jain", "5000.00", ""),
-        ("24/09/2026", "Osko Withdrawal 24Sep12:12 Test Manav Jain", "1.00", ""),
-        ("27/09/2026", "OSKO WITHDRAWAL 27Sep20:42 Op 17 Blisters MANAV JAIN", "54.00", ""),
-        ("24/09/2026", "Visa Purchase 24Sep Revolut**5228* Melbourne", "6000.00", ""),
-        ("22/09/2026", "Visa Purchase 22Sep Revolut**5228* Melbourne", "390.00", ""),
-        ("22/09/2026", "Visa Purchase 22Sep Revolut**5228* Melbourne", "135.00", ""),
-        ("24/09/2026", "Sct Deposit 24Sep Sent From Revolut Manav Jain", "", "1.00"),
-        ("26/09/2026", "Sct Withdrawal 26Sep Float Manav Jain", "20.00", ""),
-        ("22/09/2026", "Internet Withdrawal To 0000206850220", "500.00", ""),
+        ("25/09/2026", "Osko Withdrawal 25Sep Change For Hot Wheels W Demo", "10.00", ""),
+        ("24/09/2026", "Osko Withdrawal  24Sep12:03   Kmart 30Th   Alex Sample", "5000.00", ""),
+        ("24/09/2026", "Osko Withdrawal 24Sep12:12 Test Alex Sample", "1.00", ""),
+        ("27/09/2026", "OSKO WITHDRAWAL 27Sep20:42 Op 17 Blisters ALEX SAMPLE", "54.00", ""),
+        ("24/09/2026", "Visa Purchase 24Sep Revolut**9999* Melbourne", "6000.00", ""),
+        ("22/09/2026", "Visa Purchase 22Sep Revolut**9999* Melbourne", "390.00", ""),
+        ("22/09/2026", "Visa Purchase 22Sep Revolut**9999* Melbourne", "135.00", ""),
+        ("24/09/2026", "Sct Deposit 24Sep Sent From Revolut Alex Sample", "", "1.00"),
+        ("26/09/2026", "Sct Withdrawal 26Sep Float Alex Sample", "20.00", ""),
+        ("22/09/2026", "Internet Withdrawal To 0000123456789", "500.00", ""),
         ("22/09/2026", "Transfer to savings", "40.00", ""),
     ]
 
@@ -82,29 +82,29 @@ def _parsed_week(tmp_path):
 def test_self_transfer_is_not_a_spending_category():
     """'ko ' inside 'osko ' used to mark every Osko row Entertainment.
 
-    Kmart is a shopping keyword, but a withdrawal paid to Manav Jain is a
+    Kmart is a shopping keyword, but a withdrawal paid to Alex Sample is a
     transfer and must not reach those rules. Knockout paid to someone else
     still matches Entertainment via 'knockout', not via the 'osko ' token.
     """
-    kmart = "Osko Withdrawal  24Sep12:03   Kmart 30Th   Manav Jain"
+    kmart = "Osko Withdrawal  24Sep12:03   Kmart 30Th   Alex Sample"
     assert finance_tracker.categorise(kmart) == "Internal transfer"
     assert finance_tracker.categorise(kmart) != "Entertainment"
     assert finance_tracker.categorise(
-        "Osko Withdrawal 24Sep12:12 Test Manav Jain"
+        "Osko Withdrawal 24Sep12:12 Test Alex Sample"
     ) == "Internal transfer"
     assert finance_tracker.categorise(
-        "Visa Purchase 24Sep Revolut**5228* Melbourne"
+        "Visa Purchase 24Sep Revolut**9999* Melbourne"
     ) == "Internal transfer"
     assert finance_tracker.categorise(
         "Visa Purchase Revolut Melbourne"
     ) == "Internal transfer"
 
-    knockout = "Osko Withdrawal 22Sep Knockout R Jaiswal"
+    knockout = "Osko Withdrawal 22Sep Knockout L Example"
     assert finance_tracker.categorise(knockout) == "Entertainment"
     assert finance_tracker._is_internal_spend(knockout) is False
 
     # 'ko ' no longer matches inside 'osko ', so this is not Entertainment.
-    hot_wheels = "Osko Withdrawal 25Sep Change For Hot Wheels W Tynan"
+    hot_wheels = "Osko Withdrawal 25Sep Change For Hot Wheels W Demo"
     assert finance_tracker.categorise(hot_wheels) == "Other"
     assert finance_tracker.categorise("Visa Purchase Kmart Broadway") == "Shopping"
     assert finance_tracker.categorise("Visa Purchase 22Sep Tfnsw Opal") == "Transport"
@@ -112,10 +112,10 @@ def test_self_transfer_is_not_a_spending_category():
 
 def test_internal_rules_cover_owner_payee_and_existing_markers():
     assert finance_tracker._is_internal_spend(
-        "Sct Withdrawal 26Sep Float Manav Jain"
+        "Sct Withdrawal 26Sep Float Alex Sample"
     ) is True
     assert finance_tracker._is_internal_spend(
-        "Internet Withdrawal To 0000206850220"
+        "Internet Withdrawal To 0000123456789"
     ) is True
     assert finance_tracker._is_internal_spend("Transfer to savings") is True
     assert finance_tracker._is_internal_spend("Transfer to Corner Lane") is False
@@ -125,7 +125,7 @@ def test_internal_rules_cover_owner_payee_and_existing_markers():
     assert finance_tracker._is_internal_spend(
         "Sct Withdrawal 26Sep Landlord Pty Ltd"
     ) is False
-    assert finance_tracker._is_internal_spend("Revolut**5228* Melbourne") is True
+    assert finance_tracker._is_internal_spend("Revolut**9999* Melbourne") is True
 
 
 def test_owner_name_comes_from_term_context(tmp_path):
@@ -136,11 +136,11 @@ def test_owner_name_comes_from_term_context(tmp_path):
         "Osko Withdrawal 1Sep Ada Lovelace"
     ) is True
     assert finance_tracker._is_internal_spend(
-        "Osko Withdrawal 1Sep Manav Jain"
+        "Osko Withdrawal 1Sep Alex Sample"
     ) is False
     # Card patterns still fall back when that field is omitted.
     assert finance_tracker._is_internal_spend(
-        "Visa Purchase 24Sep Revolut**5228* Melbourne"
+        "Visa Purchase 24Sep Revolut**9999* Melbourne"
     ) is True
 
 
@@ -160,10 +160,10 @@ def test_week_of_22_sep_2026_counts_only_genuine_spend(tmp_path):
     assert summary["flagged"] == []
 
     by_desc = {t["description"]: t for t in txns}
-    assert by_desc["Osko Withdrawal 24Sep12:03 Kmart 30Th Manav Jain"]["category"] == (
+    assert by_desc["Osko Withdrawal 24Sep12:03 Kmart 30Th Alex Sample"]["category"] == (
         "Internal transfer"
     )
-    assert by_desc["Osko Withdrawal 22Sep Knockout R Jaiswal"]["category"] == "Entertainment"
+    assert by_desc["Osko Withdrawal 22Sep Knockout L Example"]["category"] == "Entertainment"
 
 
 def test_oskos_to_people_are_listed_but_not_counted(tmp_path):
@@ -220,12 +220,12 @@ def test_subscription_audit_skips_self_transfers_and_keeps_real_merchants(tmp_pa
     _write_stgeorge(everyday, [
         row(today, "Visa Purchase SPOTIFY P1234", 11.99),
         row(previous, "Visa Purchase SPOTIFY P1234", 11.99),
-        row(today, "Osko Withdrawal Knockout R Jaiswal", 120),
-        row(previous, "Osko Withdrawal Knockout R Jaiswal", 120),
-        row(today, "Visa Purchase Revolut**5228* Melbourne", 6000),
-        row(previous, "Visa Purchase Revolut**5228* Melbourne", 390),
-        row(today, "Osko Withdrawal Kmart Manav Jain", 5000),
-        row(previous, "Osko Withdrawal Test Manav Jain", 54),
+        row(today, "Osko Withdrawal Knockout L Example", 120),
+        row(previous, "Osko Withdrawal Knockout L Example", 120),
+        row(today, "Visa Purchase Revolut**9999* Melbourne", 6000),
+        row(previous, "Visa Purchase Revolut**9999* Melbourne", 390),
+        row(today, "Osko Withdrawal Kmart Alex Sample", 5000),
+        row(previous, "Osko Withdrawal Test Alex Sample", 54),
     ])
 
     recurring = subscription_audit.find_recurring(
@@ -257,7 +257,7 @@ def test_reselling_still_ignores_own_topups_and_counts_real_cashflow(tmp_path, m
         ])
         writer.writerow(["COMPLETED", "TOPUP", stamp, "Topup", "6000", "0", "AUD", "6000"])
         writer.writerow(["COMPLETED", "CARD_PAYMENT", stamp, "EB Games", "-40", "0", "AUD", "5960"])
-        writer.writerow(["COMPLETED", "TRANSFER", stamp, "From Manav Jain", "100", "0", "AUD", "6060"])
+        writer.writerow(["COMPLETED", "TRANSFER", stamp, "From Alex Sample", "100", "0", "AUD", "6060"])
         writer.writerow(["COMPLETED", "TRANSFER", stamp, "Buyer payout", "80", "0", "AUD", "6140"])
         writer.writerow(["COMPLETED", "TRANSFER", stamp, "Supplier invoice", "-30", "0", "AUD", "6110"])
 
@@ -305,15 +305,15 @@ def test_morning_brief_week_lists_genuine_categories_only(tmp_path, monkeypatch)
     assert "5000" not in text
     assert "6000" not in text
     assert "Revolut" not in text
-    assert "Manav Jain" not in text
+    assert "Alex Sample" not in text
 
 
 def test_card_refund_reduces_the_purchase_it_refunds(tmp_path):
     """A Visa refund at the same merchant comes off that purchase. Oskos stay out."""
     rows = _week_rows() + [
         ("25/09/2026", "Visa Refund 25Sep Playstation London", "", "14.95"),
-        ("23/09/2026", "Sct Deposit 23Sep09:11 Rishi Jaiswal", "", "120.00"),
-        ("27/09/2026", "Osko Deposit 27Sep Nilesh Banga", "", "17000.00"),
+        ("23/09/2026", "Sct Deposit 23Sep09:11 Lee Example", "", "120.00"),
+        ("27/09/2026", "Osko Deposit 27Sep Sam Trader", "", "16500.00"),
     ]
     path = tmp_path / "everyday.csv"
     _write_stgeorge(path, rows)
@@ -324,7 +324,7 @@ def test_card_refund_reduces_the_purchase_it_refunds(tmp_path):
     assert "Entertainment" not in summary["by_category"]
     assert summary["transaction_count"] == 3
     assert summary["income"] == []
-    assert summary["transfers"]["total_in"] == 17120.0
+    assert summary["transfers"]["total_in"] == 16620.0
 
 
 def _txn(day, description, debit=0, credit=0):
@@ -344,9 +344,9 @@ def test_refund_matching_is_conservative():
     later = datetime.date(2026, 9, 23)
     txns = [
         _txn(day, "Visa Purchase 22Sep Woolworths Sydney", debit=390),
-        _txn(later, "Osko Deposit 23Sep Pokemon Gemma Johnston", credit=390),
+        _txn(later, "Osko Deposit 23Sep Pokemon Gem Buyer", credit=390),
         _txn(day, "Visa Purchase 22Sep Coles Sydney", debit=135),
-        _txn(later, "Osko Deposit 23Sep Bank Carlos Santos", credit=135),
+        _txn(later, "Osko Deposit 23Sep Bank Cal Buyer", credit=135),
         _txn(day, "Visa Purchase 22Sep Kmart Broadway", debit=80),
         _txn(later, "Sct Deposit 23Sep Advance", credit=80),
         _txn(day, "Visa Purchase 22Sep Woolworths Sydney", debit=40),

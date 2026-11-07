@@ -370,15 +370,21 @@ DEFAULT_FINANCE_GOALS = {
 # Moves between the owner's own accounts. finance_tracker uses this so the
 # weekly budget ignores self-transfers (Osko to yourself, Revolut top-ups).
 # Override in term_context.json under "own_accounts"; missing fields keep these.
+# Put your own name (and a masked card such as "revolut**1234") there: the
+# defaults hold no personal data, so no Osko/Sct is treated as self until
+# owner_names is set.
 DEFAULT_OWN_ACCOUNT_RULES = {
-    "owner_names": ["manav jain"],
+    "owner_names": [],
     "withdrawal_markers": [
         "osko withdrawal",
         "internet withdrawal",
         "sct withdrawal",
     ],
-    "card_patterns": ["revolut**5228", "revolut"],
+    "card_patterns": ["revolut"],
     "card_rails": ["visa purchase", "eftpos", "top-up", "topup"],
+    # Your own account numbers as they appear in bank descriptions. The
+    # weekly intelligence trend leaves out debits that mention one.
+    "account_numbers": [],
 }
 
 # How long after a purchase a matching credit can still offset it.
@@ -435,6 +441,7 @@ def get_own_account_rules() -> dict:
     to DEFAULT_OWN_ACCOUNT_RULES. Every entry is a lowercase substring.
     owner_names match a payee anywhere in an Osko/internet/Sct withdrawal.
     card_patterns match top-ups of an account he already holds (Revolut).
+    account_numbers are his own accounts, for the weekly intelligence trend.
     """
     raw = load_context().get("own_accounts") or {}
     if not isinstance(raw, dict):

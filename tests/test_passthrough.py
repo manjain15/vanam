@@ -1,7 +1,7 @@
 """Weekly spending is card lines plus logged spends. Transfers never count.
 
 The 20–26 Oct 2026 everyday-account week: $189.57 of Visa purchases, three
-Osko forwards to Nilesh ($4,932, $4,061, $2,000), the buyer deposits that
+Osko forwards to Sam Trader ($4,810, $3,975, $2,215), the buyer deposits that
 came in before them, and three small Oskos to people. Only the card lines
 and whatever was logged with the Back Tap shortcut are spending.
 """
@@ -25,7 +25,7 @@ from test_finance_routes import AUTH, _client, _dmy, _patch_files, _write_csv
 
 START = datetime.date(2026, 10, 20)
 END = datetime.date(2026, 10, 26)
-FORWARDS = 10993.0
+FORWARDS = 11000.0
 DEPOSITS = 12000.0
 CARDS = 189.57
 SMALL = 34.70
@@ -66,9 +66,9 @@ def _small_oskos():
 
 def _forwards():
     return [
-        _txn(_day(26), "Osko Withdrawal 26Oct09:19 F40S Nilesh Banga", debit=4932),
-        _txn(_day(25), "Osko Withdrawal 25Oct13:01 Ferraris Nilesh Banga", debit=4061),
-        _txn(_day(25), "Osko Withdrawal 25Oct13:03 American Nilesh Banga", debit=2000),
+        _txn(_day(26), "Osko Withdrawal 26Oct09:19 F40S Sam Trader", debit=4810),
+        _txn(_day(25), "Osko Withdrawal 25Oct13:01 Ferraris Sam Trader", debit=3975),
+        _txn(_day(25), "Osko Withdrawal 25Oct13:03 American Sam Trader", debit=2215),
     ]
 
 
@@ -120,7 +120,7 @@ def test_transfers_are_listed_and_marked_not_counted():
     assert transfers["total_out"] == round(FORWARDS + SMALL, 2)
     assert transfers["total_in"] == DEPOSITS
     amounts = {(item["amount"], item["direction"]) for item in transfers["items"]}
-    assert {(4932.0, "out"), (4061.0, "out"), (2000.0, "out")} <= amounts
+    assert {(4810.0, "out"), (3975.0, "out"), (2215.0, "out")} <= amounts
     assert {(26.0, "out"), (7.0, "out"), (1.7, "out")} <= amounts
 
 
@@ -189,7 +189,7 @@ def test_no_listed_payers_means_no_transfer_is_income(tmp_path, monkeypatch):
 def test_a_person_paying_back_does_not_reduce_card_spending():
     txns = [
         _txn(_day(22), "Visa Purchase 22Oct18:35 Knockout Tickets", debit=120),
-        _txn(_day(23), "Sct Deposit 23Oct09:11 Rishi Jaiswal", credit=60),
+        _txn(_day(23), "Sct Deposit 23Oct09:11 Lee Example", credit=60),
     ]
     summary = _summary(txns)
     assert summary["total_spend"] == 120
@@ -200,7 +200,7 @@ def test_bpay_and_direct_debit_count():
     txns = [
         _txn(_day(21), "BPAY Payment Opal Card Topup", debit=20),
         _txn(_day(22), "Direct Debit Spotify P1234", debit=11.99),
-        _txn(_day(23), "Osko Withdrawal 23Oct Rent S Ahuja", debit=903.50),
+        _txn(_day(23), "Osko Withdrawal 23Oct Rent S Demo", debit=903.50),
     ]
     summary = _summary(txns)
     assert summary["total_spend"] == 31.99
@@ -240,12 +240,12 @@ def test_repeating_person_is_not_a_subscription(tmp_path, monkeypatch):
         writer.writerow(["Date", "Description", "Debit", "Credit", "Balance"])
         for day in (today, previous):
             writer.writerow([*row(day, "Visa Purchase SPOTIFY P1234", 11.99), "100.00"])
-            writer.writerow([*row(day, "Osko Withdrawal Rent S Ahuja", 903.50), "100.00"])
+            writer.writerow([*row(day, "Osko Withdrawal Rent S Demo", 903.50), "100.00"])
 
     review = subscription_audit.summarise_subscriptions(months=3)
     assert review["monthly_known"] == 11.99
     assert review["review"] == []
-    assert all("ahuja" not in item["merchant"] for item in review["known"])
+    assert all("demo" not in item["merchant"] for item in review["known"])
 
     txns = finance_tracker.parse_stgeorge_csv(everyday)
     summary = finance_tracker.summarise_spending(
