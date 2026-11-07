@@ -698,7 +698,9 @@ def _topic_label(notes):
     stem = topics[0]
     for other in topics[1:]:
         while stem and not other.startswith(stem):
-            stem = stem.rsplit(" ", 1)[0]
+            # A one-word stem has nothing left to drop; rsplit would return it
+            # unchanged and loop forever.
+            stem = stem.rsplit(" ", 1)[0] if " " in stem else ""
     stem = stem.strip()
     return stem if len(stem) >= 4 else topics[0]
 
